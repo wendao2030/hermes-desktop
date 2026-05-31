@@ -1,4 +1,7 @@
-"""Cua-driver backend (macOS only).
+"""Cua-driver backend (Cross-platform).
+
+[PATCH-DTYAO] Original upstream: "Cua-driver backend (macOS only)".
+Changed to support Windows/Linux in addition to macOS.
 
 Speaks MCP over stdio to `cua-driver`. The Python `mcp` SDK is async, so we
 run a dedicated asyncio event loop on a background thread and marshal sync
@@ -77,12 +80,14 @@ _ELEMENT_LINE_RE = re.compile(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _is_macos() -> bool:
-    return sys.platform == "darwin"
+def _is_supported_platform() -> bool:
+    """[PATCH-DTYAO] Original upstream was _is_macos() → sys.platform == "darwin".
+    Renamed and expanded to support Windows (win32) and Linux."""
+    return sys.platform in ["darwin", "win32", "linux"]
 
 
 def _is_arm_mac() -> bool:
-    return _is_macos() and platform.machine() == "arm64"
+    return _is_supported_platform() and platform.machine() == "arm64"
 
 
 def cua_driver_binary_available() -> bool:
@@ -331,7 +336,7 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class CuaDriverBackend(ComputerUseBackend):
-    """Default computer-use backend. macOS-only via cua-driver MCP."""
+    """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
     def __init__(self) -> None:
         self._bridge = _AsyncBridge()
@@ -352,7 +357,7 @@ class CuaDriverBackend(ComputerUseBackend):
             self._bridge.stop()
 
     def is_available(self) -> bool:
-        if not _is_macos():
+        if not _is_supported_platform():
             return False
         return cua_driver_binary_available()
 
@@ -408,7 +413,7 @@ class CuaDriverBackend(ComputerUseBackend):
                     window_title=(
                         f"<no on-screen window matched app={app!r}; "
                         f"call list_apps to see available app names "
-                        f"(macOS reports localized names, e.g. '計算機' "
+                        f"(Cross-platform reports localized names, e.g. '計算機' "
                         f"instead of 'Calculator')>"
                     ),
                     png_bytes_len=0,
