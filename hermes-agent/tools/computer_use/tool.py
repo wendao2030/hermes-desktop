@@ -736,13 +736,10 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS/Windows + cua-driver binary installed (or override via env).
-
-    [PATCH-DTYAO] Original upstream: sys.platform != "darwin" (macOS only).
-    Changed to support Windows (win32) as well.
+    Conditions: macOS + cua-driver binary installed (or override via env).
     """
     if sys.platform not in ["darwin", "win32"]:
-        return False
+        return False  # [PATCH-DTYAO] was: sys.platform != "darwin"
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()
 
