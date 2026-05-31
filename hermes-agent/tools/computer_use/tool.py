@@ -737,6 +737,9 @@ def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
     Conditions: macOS/Windows + cua-driver binary installed (or override via env).
+
+    [PATCH-DTYAO] Original upstream: sys.platform != "darwin" (macOS only).
+    Changed to support Windows (win32) as well.
     """
     if sys.platform not in ["darwin", "win32"]:
         return False
