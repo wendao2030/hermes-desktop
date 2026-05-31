@@ -1,0 +1,61 @@
+# --- 虚拟环境 ---
+venv/
+hermes-agent/venv/
+
+# --- Python 缓存 ---
+__pycache__/
+*.pyc
+*.pyo
+
+# --- 敏感配置 ---
+.env
+config.yaml
+config.yaml.bak*
+auth.json
+auth.lock
+
+# --- 运行时数据（状态/日志/缓存） ---
+state.db
+state.db-shm
+state.db-wal
+processes.json
+.update_check
+.hermes_history
+logs/
+audio_cache/
+image_cache/
+cache/
+sessions/
+pairing/
+hooks/
+sandboxes/
+cron/
+interrupt_debug.log
+
+# --- 大文件（二进制） ---
+cua-driver-darwin-universal.tar.gz
+offline/wheels/
+offline/python/
+
+# --- 桌面客户端运行时 ---
+desktop-client/sessions/
+desktop-client/*debug*.json
+desktop-client/*.log
+desktop-client/__pycache__/
+
+# --- 记忆文件（个人数据） ---
+memories/
+
+# --- LSP ---
+lsp/node_modules/
+lsp/bin/
+
+# --- 补丁生成的临时文件 ---
+$null
+
+# --- IDE ---
+.vscode/
+.idea/
+
+# --- macOS ---
+.DS_Store
