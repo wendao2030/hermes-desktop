@@ -146,12 +146,13 @@ def _history_for_frontend(history: list[dict]) -> list[dict]:
         role = msg.get("role")
         if role not in {"user", "assistant", "tool", "system"}:
             continue
+        # Hide tool messages from frontend — they are technical internals
+        if role == "tool":
+            continue
         content = _message_text(msg.get("content"))
         if not content and role != "assistant":
             continue
         item = {"role": role, "content": content}
-        if msg.get("tool_name"):
-            item["tool_name"] = msg.get("tool_name")
         visible.append(item)
     return visible
 
