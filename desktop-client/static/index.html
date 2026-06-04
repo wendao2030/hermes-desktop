@@ -9,72 +9,97 @@
 <script src="/static/marked.min.js?v=2"></script>
 <style>
 :root {
-    --bg: #faf3e8;
-    --surface: #fff7ed;
-    --surface2: #fde8d0;
-    --border: #e8c9a0;
-    --text: #5c3d2e;
-    --text2: #a0856b;
-    --accent: #d4513a;
-    --accent2: #c0392b;
-    --accent-light: #fde0d4;
-    --agent-bg: #fff7ed;
+    --bg: #faf6f0;
+    --surface: #fefbf7;
+    --surface2: #f5ece0;
+    --border: #e8ddd0;
+    --text: #4a3b30;
+    --text2: #9a8575;
+    --accent: #c0392b;
+    --accent2: #a93226;
+    --accent-light: #faeae6;
+    --agent-bg: rgba(255,253,250,0.88);
     --danger: #e74c3c;
-    --success: #8b5e3c;
+    --success: #7d6b4e;
+    --blue: #2e86c1;
+    --blue-light: #ecf5fc;
     --radius: 10px;
-    --shadow: 0 2px 8px rgba(0,0,0,0.06);
+    --shadow: 0 1px 3px rgba(0,0,0,0.04);
     --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Microsoft YaHei UI", sans-serif;
     --mono: "Cascadia Code", "Fira Code", Consolas, monospace;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 html, body { font-family:var(--font); background:var(--bg); color:var(--text); height:100vh; overflow:hidden; }
 #app { display:flex; height:100vh; }
-.sidebar { width:260px; background:linear-gradient(180deg, #fff7ed 0%, #fef0e0 100%); border-right:2px solid var(--border); display:flex; flex-direction:column; flex-shrink:0; box-shadow:var(--shadow); }
-.sidebar-header { padding:20px 16px; border-bottom:1px solid var(--border); background:linear-gradient(135deg, #e74c3c, #c0392b); }
-.sidebar-header h2 { font-size:17px; color:#fff; display:flex; align-items:center; gap:8px; text-shadow:0 1px 2px rgba(0,0,0,0.2); }
-.sidebar-header h2 img { width:40px; height:40px; border-radius:10px; object-fit:cover; box-shadow:0 2px 8px rgba(0,0,0,0.2); }
+.sidebar { width:260px; background:linear-gradient(180deg, #fffaf5 0%, #fef5ee 100%); border-right:1px solid rgba(200,180,155,0.35); display:flex; flex-direction:column; flex-shrink:0; overflow:hidden; }
+.sidebar-header { padding:20px 16px; border-bottom:1px solid rgba(200,180,155,0.3); background:linear-gradient(135deg, #e74c3c, #c0392b); }
+.sidebar-header h2 { font-size:17px; color:#fff; display:flex; align-items:center; gap:8px; }
+.sidebar-header h2 img { width:40px; height:40px; border-radius:10px; object-fit:cover; }
 .btn-new-session { display:block; width:100%; margin-top:14px; padding:10px 12px; background:rgba(255,255,255,0.25); color:#fff; border:1px solid rgba(255,255,255,0.3); border-radius:var(--radius); cursor:pointer; font-size:13px; font-weight:600; transition:all .2s; }
 .btn-new-session:hover { background:rgba(255,255,255,0.4); transform:translateY(-1px); }
-.session-list { flex:1; overflow-y:auto; padding:10px 8px; }
-.session-item { padding:12px 14px; border-radius:var(--radius); cursor:pointer; font-size:13px; margin-bottom:6px; transition:all .15s; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border:1px solid transparent; }
-.session-item:hover { background:var(--surface2); border-color:var(--border); }
-.session-item.active { background:var(--accent-light); border-left:4px solid var(--accent); padding-left:11px; box-shadow:var(--shadow); }
+.session-list { flex:1; overflow-y:auto; padding:0; display:flex; flex-direction:column; }
+.session-list-header { display:flex; align-items:center; gap:6px; padding:10px 12px 8px 12px; cursor:pointer; user-select:none; flex-shrink:0; border-bottom:1px solid transparent; transition:border-color .15s; }
+.session-list-header:hover { border-bottom-color:var(--border); }
+.session-list-title { font-size:12px; font-weight:600; color:var(--text2); white-space:nowrap; }
+.session-list-count { font-size:10px; background:var(--surface2); color:var(--text2); padding:1px 7px; border-radius:10px; font-weight:500; }
+.session-list-toggle { margin-left:auto; display:inline-flex; align-items:center; justify-content:center; color:var(--text2); transition:transform .25s ease; width:20px; height:20px; }
+.session-list-toggle.collapsed { transform:rotate(-90deg); }
+.session-list-body { display:flex; flex-direction:column; padding:4px 8px 8px 8px; overflow:hidden; transition:max-height .3s ease, opacity .25s ease, padding .3s ease; max-height:600px; opacity:1; }
+.session-list-body.collapsed { max-height:0 !important; opacity:0; padding-top:0; padding-bottom:0; pointer-events:none; }
+.session-item { padding:10px 12px; border-radius:8px; cursor:pointer; font-size:13px; margin-bottom:5px; transition:background .15s, color .15s; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; border:none; }
+.session-item:hover { background:rgba(200,180,155,0.15); }
+.session-item.active { background:var(--accent-light); color:#8a2e22; padding-left:11px; }
 .session-item .title { color:var(--text); font-weight:500; }
 .session-item .date { color:var(--text2); font-size:11px; margin-top:3px; }
-.sidebar-footer { padding:14px 16px; border-top:1px solid var(--border); font-size:12px; color:var(--text2); background:rgba(0,0,0,0.02); display:flex; flex-direction:column; gap:8px; }
+.sidebar-footer { padding:14px 16px; border-top:1px solid rgba(200,180,155,0.25); font-size:12px; color:var(--text2); background:rgba(200,180,155,0.06); display:flex; flex-direction:column; gap:8px; margin-top:auto; flex-shrink:0; }
 .btn-minimize-bubble { width:100%; padding:8px 12px; background:rgba(212,81,58,0.1); color:var(--accent); border:1px solid rgba(212,81,58,0.25); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:all .15s; text-align:center; }
 .btn-minimize-bubble:hover { background:rgba(212,81,58,0.18); transform:translateY(-1px); }
-.main { flex:1; display:flex; flex-direction:column; min-width:0; background:linear-gradient(180deg, #fef9f3 0%, #faf3e8 100%); }
-.topbar { padding:10px 20px; border-bottom:2px solid var(--border); display:flex; align-items:center; justify-content:space-between; font-size:13px; color:var(--text2); min-height:44px; background:var(--surface); box-shadow:0 1px 4px rgba(0,0,0,0.04); }
-.topbar .status { color:var(--success); font-weight:600; }
-.topbar .status.error { color:var(--danger); }
-.chat-area { flex:1; overflow-y:auto; padding:20px; display:flex; flex-direction:column; gap:14px; }
+.sidebar-footer-row { display:flex; gap:8px; align-items:center; }
+.btn-settings { width:28px; height:28px; padding:0; background:transparent; color:var(--text2); border:1px solid var(--border); border-radius:6px; cursor:pointer; font-size:13px; transition:all .15s; display:inline-flex; align-items:center; justify-content:center; line-height:1; flex-shrink:0; }
+.btn-settings:hover { background:var(--surface2); }
+.btn-settings.active { background:var(--accent-light); border-color:var(--accent); color:var(--accent); }
+.btn-settings-item { display:block; width:100%; padding:8px 10px; background:none; color:var(--text); border:1px solid transparent; border-radius:6px; cursor:pointer; font-size:13px; text-align:left; transition:all .15s; }
+.btn-settings-item:hover { background:var(--surface2); }
+.btn-settings-item.active { background:var(--accent-light); color:var(--accent); }
+.settings-panel { overflow:hidden; transition:max-height .25s ease, opacity .25s ease, margin .25s ease; max-height:0; opacity:0; margin-top:0; }
+.settings-panel.open { max-height:120px; opacity:1; margin-top:4px; }
+.settings-panel-inner { padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
+.settings-item { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; }
+.settings-item label { display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text); }
+.settings-item input[type="checkbox"] { accent-color:var(--accent); width:14px; height:14px; cursor:pointer; }
+.main { flex:1; display:flex; flex-direction:column; min-width:0; background:linear-gradient(180deg, #fefbf7 0%, #faf6f0 100%); }
+.chat-area { flex:1; overflow-y:auto; padding:16px 20px; display:flex; flex-direction:column; gap:14px; }
 .chat-empty { flex:1; display:flex; align-items:center; justify-content:center; color:var(--text2); font-size:15px; text-align:center; line-height:2; }
-.message { max-width:80%; padding:12px 16px; border-radius:var(--radius); font-size:14px; line-height:1.7; word-wrap:break-word; box-shadow:var(--shadow); }
-.message.user { align-self:flex-end; background:var(--accent); color:#fff; border-bottom-right-radius:4px; }
-.message.agent, .message.agent-streaming { align-self:flex-start; background:var(--agent-bg); border:1px solid var(--border); border-bottom-left-radius:4px; }
-.message.tool { align-self:flex-start; background:#fff; border:1px dashed var(--border); color:var(--text2); box-shadow:none; font-size:12px; }
+.message { max-width:min(80%, 720px); padding:12px 16px; border-radius:12px; font-size:14px; line-height:1.7; word-wrap:break-word; user-select:text; -webkit-user-select:text; }
+.message.user { align-self:flex-end; background:linear-gradient(135deg, #d44a3e, #c0392b); color:#fff; border-bottom-right-radius:3px; }
+.message.agent, .message.agent-streaming { align-self:flex-start; background:rgba(255,252,248,0.92); border:1px solid rgba(200,180,155,0.35); border-bottom-left-radius:3px; color:var(--text); }
+.message.tool { align-self:flex-start; background:rgba(250,245,238,0.9); border:1px dashed rgba(200,180,155,0.45); color:var(--text2); box-shadow:none; font-size:12px; margin-left:44px; }
 .message.system { align-self:center; background:transparent; color:var(--text2); font-size:12px; text-align:center; max-width:100%; padding:4px 12px; box-shadow:none; }
-.message.agent p, .message.agent-streaming p { margin:4px 0; }
-.message.agent pre, .message.agent-streaming pre { background:#fdf3e7; border:1px solid var(--border); border-radius:6px; padding:12px; overflow-x:auto; font-family:var(--mono); font-size:13px; margin:8px 0; }
-.message.agent code, .message.agent-streaming code { font-family:var(--mono); font-size:13px; color:var(--accent); }
+.msg-row { display:flex; align-items:flex-start; gap:10px; max-width:100%; }
+.msg-row.user { align-self:flex-end; flex-direction:row-reverse; }
+.msg-row.agent { align-self:flex-start; }
+.msg-avatar { width:32px; height:32px; border-radius:50%; object-fit:cover; flex-shrink:0; }
+.msg-row .message { max-width:calc(100% - 44px); flex:1; }
+.msg-row.user .message { max-width:calc(100% - 44px); }
+.msg-row.agent .message { border-bottom-left-radius:4px; }
+.message.agent p, .message.agent-streaming p { margin:4px 0; color:var(--text); }
+.message.agent pre, .message.agent-streaming pre { background:rgba(248,240,230,0.9); border:1px solid rgba(200,180,155,0.35); border-radius:8px; padding:12px; overflow-x:auto; font-family:var(--mono); font-size:13px; margin:8px 0; color:#4a382a; user-select:text; -webkit-user-select:text; }
+.message.agent code, .message.agent-streaming code { font-family:var(--mono); font-size:13px; color:#b84a3d; background:rgba(192,57,43,0.05); padding:1px 5px; border-radius:4px; user-select:text; -webkit-user-select:text; }
 .message.agent ul, .message.agent ol, .message.agent-streaming ul, .message.agent-streaming ol { margin:4px 0; padding-left:20px; }
-.message.agent blockquote, .message.agent-streaming blockquote { border-left:3px solid var(--accent); padding-left:12px; color:var(--text2); margin:8px 0; background:var(--accent-light); border-radius:0 6px 6px 0; }
-.input-area { padding:14px 20px; border-top:2px solid var(--border); background:var(--surface); box-shadow:0 -1px 4px rgba(0,0,0,0.04); }
+.message.agent blockquote, .message.agent-streaming blockquote { border-left:3px solid rgba(192,57,43,0.25); padding-left:12px; color:var(--text2); margin:8px 0; background:rgba(250,237,235,0.55); border-radius:0 8px 8px 0; }
+.input-area { padding:14px 24px; border-top:1px solid rgba(200,180,155,0.3); background:rgba(255,252,248,0.6); }
 .input-row { display:flex; gap:10px; align-items:flex-end; }
-.input-row textarea { flex:1; padding:12px 16px; background:#fff; border:2px solid var(--border); border-radius:var(--radius); color:var(--text); font-family:var(--font); font-size:14px; resize:none; min-height:44px; max-height:150px; outline:none; line-height:1.5; transition:border-color .2s; }
-.input-row textarea:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-light); }
-.input-row button { min-width:88px; padding:12px 20px; background:linear-gradient(135deg, var(--accent), var(--accent2)); color:#fff; border:none; border-radius:var(--radius); cursor:pointer; font-size:14px; font-weight:600; white-space:nowrap; transition:all .2s; box-shadow:0 2px 6px rgba(197,57,45,0.3); }
-.input-row button:hover { transform:translateY(-1px); box-shadow:0 4px 12px rgba(197,57,45,0.4); }
+.input-row textarea { flex:1; padding:12px 16px; background:#fff; border:1px solid rgba(200,180,155,0.4); border-radius:12px; color:var(--text); font-family:var(--font); font-size:14px; resize:none; min-height:44px; max-height:150px; outline:none; line-height:1.5; transition:border-color .2s, box-shadow .2s; }
+.input-row textarea:focus { border-color:rgba(192,57,43,0.35); box-shadow:0 0 0 2px rgba(192,57,43,0.08); }
+.input-row button { min-width:72px; padding:11px 18px; background:linear-gradient(135deg, #d44a3e, #c0392b); color:#fff; border:none; border-radius:10px; cursor:pointer; font-size:13px; font-weight:600; white-space:nowrap; transition:opacity .15s; }
+.input-row button:hover { opacity:.9; }
 .input-row button:disabled { background:var(--border); color:var(--text2); cursor:not-allowed; box-shadow:none; transform:none; }
 .input-row .btn-stop { background:var(--danger); box-shadow:0 2px 6px rgba(231,76,60,0.25); }
 .input-row .btn-stop:hover { box-shadow:0 4px 12px rgba(231,76,60,0.35); }
-.input-extras { display:flex; gap:12px; margin-top:8px; font-size:12px; color:var(--text2); align-items:center; }
-.btn-upload { padding:4px 10px; background:transparent; color:var(--accent); border:1px solid var(--border); border-radius:6px; cursor:pointer; font-size:12px; }
-.btn-upload:hover { background:var(--accent-light); }
-.log-toggle { cursor:pointer; font-size:13px; background:none; border:none; padding:2px 8px; border-radius:4px; color:var(--text2); transition:background .2s; }
-.log-toggle:hover { background:var(--surface2); }
-.log-panel { position:fixed; bottom:0; left:260px; right:0; height:200px; background:#1e1e1e; color:#d4d4d4; border-top:2px solid var(--accent); z-index:100; display:flex; flex-direction:column; font-family:var(--mono); font-size:12px; transition:transform .3s ease; }
+.input-extras { display:flex; gap:10px; margin-top:8px; font-size:12px; color:var(--text2); align-items:center; }
+.btn-upload { padding:4px 10px; background:transparent; color:var(--text2); border:1px solid rgba(200,180,155,0.3); border-radius:6px; cursor:pointer; font-size:11px; opacity:.65; transition:opacity .15s, background .15s; }
+.btn-upload:hover { opacity:1; background:rgba(200,180,155,0.12); }
+.log-panel { position:fixed; bottom:0; left:0; right:0; height:200px; background:#1e1e1e; color:#d4d4d4; border-top:2px solid var(--accent); z-index:100; display:flex; flex-direction:column; font-family:var(--mono); font-size:12px; transition:transform .3s ease; }
 .log-panel.collapsed { transform:translateY(100%); pointer-events:none; }
 .log-panel-header { display:flex; align-items:center; justify-content:space-between; padding:6px 12px; background:#2d2d2d; border-bottom:1px solid #444; flex-shrink:0; }
 .log-panel-header span { color:#888; font-size:11px; }
@@ -95,10 +120,133 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 .thinking span { width:7px; height:7px; background:var(--accent); border-radius:50%; animation:bounce 1.2s infinite; }
 .thinking span:nth-child(2) { animation-delay:.15s; }
 .thinking span:nth-child(3) { animation-delay:.3s; }
+.thinking-bar { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:0 20px 14px 20px; padding:10px 16px; background:#fff; border:1px solid rgba(200,180,155,0.25); border-radius:10px; cursor:pointer; transition:border-color .15s, background .15s; user-select:none; flex-shrink:0; }
+.thinking-bar:hover { border-color:rgba(200,180,155,0.45); background:#fffdfb; }
+.thinking-left { display:flex; align-items:center; gap:8px; }
+.thinking-dot { width:6px; height:6px; background:var(--accent); border-radius:50%; animation:bounce 1.2s infinite; opacity:.6; }
+.thinking-dot:nth-child(2) { animation-delay:.2s; }
+.thinking-dot:nth-child(3) { animation-delay:.35s; }
+.thinking-text { font-size:12px; color:var(--text2); white-space:nowrap; letter-spacing:.5px; }
+.thinking-right { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--text2); opacity:.55; transition:opacity .15s; white-space:nowrap; }
+.thinking-bar:hover .thinking-right { opacity:.85; }
+.thinking-details { margin:0 20px 14px 20px; padding:10px 14px; background:rgba(250,245,238,0.85); border:1px solid rgba(200,180,155,0.2); border-radius:9px; max-height:200px; overflow-y:auto; flex-shrink:0; }
+.thinking-detail-item { font-family:var(--mono); font-size:11.5px; color:var(--text2); line-height:1.8; padding:3px 0; border-bottom:1px solid rgba(200,180,155,0.12); }
+.thinking-detail-item:last-child { border-bottom:none; }
 @keyframes bounce {
     0%,80%,100% { transform:scale(.6); opacity:.4; }
     40% { transform:scale(1); opacity:1; }
 }
+.context-menu { position:fixed; z-index:200; background:#fff; border:1px solid var(--border); border-radius:8px; box-shadow:0 4px 16px rgba(0,0,0,0.12); min-width:140px; padding:4px 0; }
+.context-menu-item { padding:8px 16px; font-size:13px; cursor:pointer; color:var(--text); transition:background .12s; }
+.context-menu-item:hover { background:var(--surface2); }
+.context-menu-item.danger { color:var(--danger); }
+.context-menu-item.danger:hover { background:#fdedec; }
+.sidebar-nav { display:flex; flex-direction:column; gap:2px; padding:8px; border-top:1px solid var(--border); }
+.sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:10px 14px; border-radius:9px; cursor:pointer; font-size:13px; color:var(--text); transition:background .15s, color .15s; border:none; }
+.sidebar-nav-item:hover { background:rgba(200,180,155,0.18); }
+.sidebar-nav-item.active { background:rgba(192,57,43,0.08); color:#a03226; font-weight:600; }
+.sidebar-nav-item .nav-icon { font-size:16px; width:20px; text-align:center; }
+.sidebar-nav-item .nav-badge { margin-left:auto; font-size:10px; background:var(--accent); color:#fff; padding:1px 6px; border-radius:8px; }
+
+/* Page views */
+.page-view { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+.page-toolbar { padding:12px 20px; border-bottom:1px solid rgba(200,180,155,0.3); background:rgba(255,252,248,0.5); display:flex; gap:10px; align-items:center; flex-shrink:0; flex-wrap:wrap; }
+.page-toolbar .toolbar-title { font-size:15px; font-weight:600; color:var(--text); margin-right:auto; }
+.page-list { flex:1; overflow-y:auto; padding:16px 20px; }
+
+/* Card shared */
+.card { background:#fff; border:1px solid rgba(200,180,155,0.3); border-radius:11px; padding:14px 16px; margin-bottom:9px; transition:border-color .15s, box-shadow .15s; cursor:pointer; }
+.card:hover { border-color:rgba(192,57,43,0.25); box-shadow:0 2px 8px rgba(0,0,0,0.06); }
+.card-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+.card-name { font-weight:600; font-size:14px; color:var(--text); }
+.card-desc { font-size:12px; color:var(--text2); line-height:1.5; }
+.card-meta { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; align-items:center; }
+
+/* Badges */
+.badge { padding:3px 10px; border-radius:12px; font-size:11px; font-weight:500; white-space:nowrap; }
+.badge.green { background:#e8f5e9; color:#2e7d32; }
+.badge.blue { background:#e3f2fd; color:#1565c0; }
+.badge.red { background:#fce4ec; color:#c62828; }
+.badge.purple { background:#f3e5f5; color:#7b1fa2; }
+.badge.gray { background:#f5f5f5; color:#999; }
+.badge.yellow { background:#fff8e1; color:#f57f17; }
+
+/* Task cards */
+.task-card { cursor:default; }
+.task-card:hover { border-color:var(--blue); box-shadow:0 2px 8px rgba(46,134,193,0.08); }
+.task-status { font-size:11px; color:var(--text2); }
+.task-status .ok { color:#2e7d32; }
+.task-status .fail { color:var(--danger); }
+
+/* Buttons */
+.btn-sm { padding:5px 12px; border:none; border-radius:7px; cursor:pointer; font-size:11px; font-weight:500; transition:background .15s, opacity .15s; white-space:nowrap; }
+.btn-sm.primary { background:linear-gradient(135deg, #d44a3e, #c0392b); color:#fff; }
+.btn-sm.primary:hover { opacity:.9; }
+.btn-sm.action { background:#3a8cc9; color:#fff; }
+.btn-sm.action:hover { opacity:.88; }
+.btn-sm.warn { background:#d4a02a; color:#fff; }
+.btn-sm.warn:hover { opacity:.9; }
+.btn-sm.danger { background:transparent; color:var(--danger); border:1px solid transparent; }
+.btn-sm.danger:hover { background:rgba(231,76,60,0.06); }
+.btn-sm.ghost { background:transparent; color:var(--text2); border:1px solid transparent; }
+.btn-sm.ghost:hover { background:rgba(200,180,155,0.15); }
+.btn-sm.star { background:transparent; color:#f39c12; font-size:14px; padding:2px 6px; }
+.btn-sm.star.active { color:#f57f17; }
+
+/* Filter tabs */
+.filter-tabs { display:flex; gap:4px; }
+.filter-tab { padding:5px 13px; border-radius:7px; cursor:pointer; font-size:12px; color:var(--text2); border:1px solid transparent; background:transparent; transition:background .15s, color .15s; }
+.filter-tab:hover { background:rgba(200,180,155,0.15); }
+.filter-tab.active { background:#3a8cc9; color:#fff; }
+
+/* Home page sections */
+.home-section { margin-bottom:24px; }
+.home-section-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.home-section-title { font-size:14px; font-weight:600; color:var(--text); }
+.home-section-link { font-size:12px; color:var(--blue); cursor:pointer; text-decoration:none; }
+.home-section-link:hover { text-decoration:underline; }
+
+/* Empty state */
+.empty-state { padding:40px; text-align:center; color:var(--text2); }
+.empty-state .empty-icon { font-size:40px; margin-bottom:12px; }
+.empty-state .empty-title { font-size:15px; font-weight:500; margin-bottom:4px; color:var(--text); }
+.empty-state .empty-hint { font-size:12px; }
+
+/* Skills page */
+.skills-toolbar { padding:12px 20px; border-bottom:1px solid rgba(200,180,155,0.3); background:rgba(255,252,248,0.5); display:flex; gap:12px; align-items:center; flex-shrink:0; }
+.skills-toolbar .search-input { flex:1; padding:8px 14px; background:#fff; border:1px solid rgba(200,180,155,0.35); border-radius:8px; font-size:13px; color:var(--text); outline:none; max-width:320px; }
+.skills-toolbar .search-input:focus { border-color:var(--accent); }
+.skills-tabs { display:flex; gap:4px; }
+.skills-tab { padding:6px 14px; border-radius:7px; cursor:pointer; font-size:13px; color:var(--text2); border:1px solid transparent; background:transparent; transition:background .15s, color .15s; }
+.skills-tab:hover { background:rgba(200,180,155,0.15); }
+.skills-tab.active { background:#c0392b; color:#fff; }
+.skill-detail-panel { flex:1; overflow-y:auto; padding:20px; }
+.skill-detail-back { display:inline-flex; align-items:center; gap:4px; padding:6px 12px; background:rgba(200,180,155,0.12); border:none; border-radius:7px; cursor:pointer; font-size:13px; color:var(--text); margin-bottom:16px; }
+.skill-detail-back:hover { background:rgba(200,180,155,0.22); }
+.skill-detail-content { background:#fff; border:1px solid rgba(200,180,155,0.3); border-radius:11px; padding:20px; font-size:14px; line-height:1.8; }
+.skill-detail-content h1,.skill-detail-content h2,.skill-detail-content h3 { color:var(--accent); margin:12px 0 6px; }
+.skill-detail-content code { font-family:var(--mono); font-size:13px; background:rgba(192,57,43,0.06); padding:1px 4px; border-radius:4px; }
+.skill-detail-content pre { background:rgba(248,240,230,0.9); border:1px solid rgba(200,180,155,0.35); border-radius:8px; padding:12px; overflow-x:auto; font-family:var(--mono); font-size:13px; margin:8px 0; }
+.market-card .install-btn { padding:5px 14px; background:linear-gradient(135deg, #d44a3e, #c0392b); color:#fff; border:none; border-radius:7px; cursor:pointer; font-size:12px; font-weight:500; transition:opacity .15s; }
+.market-card .install-btn:hover { opacity:.9; }
+.market-card .install-btn:disabled { background:#ccc; cursor:not-allowed; }
+.market-card .install-btn.installed { background:var(--success); }
+
+/* Action buttons below agent messages */
+.msg-actions { display:flex; gap:8px; margin-top:8px; }
+.msg-actions button { display:inline-flex; align-items:center; gap:2px; padding:3px 9px; background:transparent; border:1px solid transparent; border-radius:5px; cursor:pointer; font-size:11px; font-weight:400; transition:opacity .15s, background .15s, color .15s; opacity:.5; color:var(--text2); }
+.msg-actions button:hover { opacity:1; }
+.btn-save-task:hover { color:#2e86c1; border-color:rgba(200,180,155,0.35); background:#f0f7ff; }
+
+/* Quick input on home */
+.home-input { padding:20px; }
+.home-input .input-row textarea { min-height:50px; }
+
+/* Recent sessions on home */
+.recent-session { display:flex; align-items:center; justify-content:space-between; padding:10px 14px; border-radius:9px; cursor:pointer; font-size:13px; transition:background .15s; border:none; }
+.recent-session:hover { background:rgba(200,180,155,0.15); }
+.recent-session .session-title { color:var(--text); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.recent-session .session-time { color:var(--text2); font-size:11px; margin-left:12px; flex-shrink:0; }
 </style>
 </head>
 <body>
@@ -108,63 +256,216 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             <h2><img src="/static/hermes_logo.png" alt="Hermes"> Hermes 智能助手</h2>
             <button class="btn-new-session" @click="newSession">+ 新建对话</button>
         </div>
-        <div class="session-list">
-            <div
-                v-for="s in sessions"
-                :key="s.session_id"
-                class="session-item"
-                :class="{ active: s.session_id === currentSessionId }"
-                @click="switchSession(s.session_id)"
-            >
-                <div class="title">{{ s.title || s.session_id.slice(-12) }}</div>
-                <div class="date">{{ formatDate(s.created_at) }}</div>
+        <div class="session-list" v-if="activeView === 'chat'">
+            <div class="session-list-header" @click="toggleSessionList">
+                <span class="session-list-title">📋 对话记录</span>
+                <span class="session-list-count" v-if="!sessionListCollapsed">{{ sessions.length }} 条</span>
+                <span class="session-list-toggle" :class="{ collapsed: sessionListCollapsed }">
+                    <svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 4.5L6 7.5L9 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </span>
             </div>
-            <div v-if="sessions.length === 0" style="padding:20px;font-size:12px;color:var(--text2);">
-                暂无对话
+            <div class="session-list-body" :class="{ collapsed: sessionListCollapsed }">
+                <div
+                    v-for="s in sessions"
+                    :key="s.session_id"
+                    class="session-item"
+                    :class="{ active: s.session_id === currentSessionId }"
+                    @click="switchSession(s.session_id)"
+                    @contextmenu.prevent="showContextMenu($event, s.session_id)"
+                >
+                    <div class="title">{{ s.title || s.session_id.slice(-12) }}</div>
+                    <div class="date">{{ formatDate(s.created_at) }}</div>
+                </div>
+                <div v-if="sessions.length === 0" style="padding:20px;font-size:12px;color:var(--text2);">
+                    暂无对话
+                </div>
+            </div>
+        </div>
+        <div class="sidebar-nav">
+            <div class="sidebar-nav-item" :class="{ active: activeView === 'home' }" @click="switchToHome()">
+                <span class="nav-icon">🏠</span> 首页
+            </div>
+            <div class="sidebar-nav-item" :class="{ active: activeView === 'chat' }" @click="activeView = 'chat'">
+                <span class="nav-icon">💬</span> 对话
+            </div>
+            <div class="sidebar-nav-item" :class="{ active: activeView === 'tasks' }" @click="switchToTasks()">
+                <span class="nav-icon">📋</span> 我的任务
+                <span class="nav-badge" v-if="cronJobs.length">{{ cronJobs.length }}</span>
+            </div>
+            <div class="sidebar-nav-item" :class="{ active: activeView === 'skills' }" @click="switchToSkills()">
+                <span class="nav-icon">🧩</span> 我的技能
             </div>
         </div>
         <div class="sidebar-footer">
             <button class="btn-minimize-bubble" @click="minimizeToBubble">最小化到悬浮窗</button>
-            <span>模型: {{ config.model }}</span>
+            <div class="sidebar-footer-row">
+                <span>模型: {{ config.model }}</span>
+                <button class="btn-settings" :class="{ active: showSettings }" @click="showSettings = !showSettings" title="设置">⚙</button>
+            </div>
+            <div class="settings-panel" :class="{ open: showSettings }">
+                <div class="settings-panel-inner">
+                    <button class="btn-settings-item" @click="showLog = !showLog; showSettings=false;" :class="{ active: showLog }">查看服务日志</button>
+                </div>
+            </div>
         </div>
     </div>
 
     <div class="main">
-        <div class="topbar">
-            <span>{{ currentTitle || '新对话' }}</span>
-            <div style="display:flex;align-items:center;gap:10px;">
-                <button class="log-toggle" @click="showLog = !showLog" title="查看服务日志">日志</button>
-                <span class="status" :class="{ error: wsError }">
-                    {{ wsStatus }}
-                </span>
+
+        <!-- ========== HOME VIEW ========== -->
+        <div v-if="activeView === 'home'" class="page-view">
+            <div class="page-list">
+                <!-- Quick input -->
+                <div class="home-input">
+                    <div class="input-row">
+                        <textarea
+                            v-model="inputText"
+                            placeholder="有什么我可以帮你的？"
+                            @keydown="handleKeydown"
+                            rows="1"
+                            ref="inputEl"
+                        ></textarea>
+                        <button @click="sendMessage" :disabled="!inputText.trim()">发送</button>
+                    </div>
+                </div>
+
+                <!-- Pinned / 常用任务 -->
+                <div class="home-section" v-if="pinnedTasks.length > 0">
+                    <div class="home-section-header">
+                        <span class="home-section-title">⭐ 常用任务</span>
+                        <a class="home-section-link" @click="switchToTasks()">查看全部 →</a>
+                    </div>
+                    <div v-for="job in pinnedTasks.slice(0, 4)" :key="job.id" class="card task-card">
+                        <div class="card-header">
+                            <span class="card-name">{{ job.name || '未命名任务' }}</span>
+                            <span v-if="job.paused" class="badge gray">已暂停</span>
+                            <span v-else-if="job.schedule" class="badge blue">⏱ {{ formatSchedule(job.schedule) }}</span>
+                            <span v-else class="badge green">手动触发</span>
+                        </div>
+                        <div class="card-desc">{{ job.prompt || '暂无描述' }}</div>
+                        <div class="card-meta" style="justify-content:space-between;">
+                            <span class="task-status">
+                                <span v-if="job.last_run_at">上次: {{ formatDate(job.last_run_at) }}</span>
+                                <span v-if="job.last_status" :class="job.last_status === 'ok' ? 'ok' : 'fail'">
+                                    {{ job.last_status === 'ok' ? ' ✅' : ' ❌' }}
+                                </span>
+                            </span>
+                            <button class="btn-sm action" @click.stop="triggerJob(job.id)">▶ 执行</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 最近执行的任务 -->
+                <div class="home-section" v-if="recentTasks.length > 0">
+                    <div class="home-section-header">
+                        <span class="home-section-title">🕐 最近任务</span>
+                    </div>
+                    <div v-for="job in recentTasks.slice(0, 4)" :key="job.id" class="card task-card">
+                        <div class="card-header">
+                            <span class="card-name">{{ job.name || '未命名任务' }}</span>
+                            <span v-if="job.paused" class="badge gray">已暂停</span>
+                            <span v-else-if="job.schedule" class="badge blue">⏱ {{ formatSchedule(job.schedule) }}</span>
+                            <span v-else class="badge green">手动触发</span>
+                        </div>
+                        <div class="card-desc">{{ job.prompt || '暂无描述' }}</div>
+                        <div class="card-meta" style="justify-content:space-between;">
+                            <span class="task-status">
+                                <span v-if="job.last_run_at">上次: {{ formatDate(job.last_run_at) }}</span>
+                                <span v-if="job.last_status" :class="job.last_status === 'ok' ? 'ok' : 'fail'">
+                                    {{ job.last_status === 'ok' ? ' ✅' : ' ❌' }}
+                                </span>
+                            </span>
+                            <button class="btn-sm action" @click.stop="triggerJob(job.id)">▶ 执行</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 失败 / 未完成任务 -->
+                <div class="home-section" v-if="failedTasks.length > 0">
+                    <div class="home-section-header">
+                        <span class="home-section-title">⚠️ 需要关注的任务</span>
+                    </div>
+                    <div v-for="job in failedTasks.slice(0, 4)" :key="job.id" class="card task-card" style="border-left: 3px solid var(--danger);">
+                        <div class="card-header">
+                            <span class="card-name">{{ job.name || '未命名任务' }}</span>
+                            <span class="badge red">上次失败</span>
+                        </div>
+                        <div class="card-desc">{{ job.prompt || '暂无描述' }}</div>
+                        <div class="card-meta" style="justify-content:space-between;">
+                            <span class="task-status">
+                                <span v-if="job.last_run_at">上次: {{ formatDate(job.last_run_at) }}</span>
+                                <span class="fail"> ❌</span>
+                            </span>
+                            <button class="btn-sm action" @click.stop="triggerJob(job.id)">🔄 重试</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent sessions -->
+                <div class="home-section" v-if="sessions.length > 0">
+                    <div class="home-section-header">
+                        <span class="home-section-title">📁 最近对话</span>
+                    </div>
+                    <div v-for="s in sessions.slice(0, 5)" :key="s.session_id" class="recent-session" @click="switchSession(s.session_id); activeView = 'chat'">
+                        <span class="session-title">{{ s.title || s.session_id.slice(-12) }}</span>
+                        <span class="session-time">{{ formatDate(s.created_at) }}</span>
+                    </div>
+                </div>
+
+                <!-- Empty welcome -->
+                <div v-if="sessions.length === 0 && cronJobs.length === 0" class="chat-empty">
+                    <div>
+                        <img src="/static/hermes_logo.png" alt="Hermes" style="width:100px;height:100px;border-radius:20px;object-fit:cover;margin-bottom:16px;box-shadow:0 4px 16px rgba(0,0,0,0.12);">
+                        <strong>欢迎使用 Hermes 智能助手</strong><br>
+                        <small style="color:var(--text2);">在下方输入你的问题开始使用</small>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <div class="chat-area" ref="chatArea">
+        <!-- ========== CHAT VIEW ========== -->
+        <div v-if="activeView === 'chat'" class="chat-area" ref="chatArea">
             <div v-if="messages.length === 0 && !isThinking" class="chat-empty">
                 <div>
                     <img src="/static/hermes_logo.png" alt="Hermes" style="width:120px;height:120px;border-radius:20px;object-fit:cover;margin-bottom:20px;box-shadow:0 6px 24px rgba(0,0,0,0.18);">
                     <strong>欢迎使用 Hermes 智能助手</strong><br>
-                    <small style="color:var(--text2)">输入你的问题，按 Ctrl+Enter 发送</small>
+                    <small style="color:var(--text2)">输入你的问题，按 Enter 发送</small>
                 </div>
             </div>
 
-            <div
-                v-for="(msg, idx) in displayedMessages"
-                :key="idx"
-                class="message"
-                :class="msg.role"
-                v-html="msg.html || msg.content"
-            ></div>
-
-            <div v-if="isThinking" class="message agent">
-                <div class="thinking">
-                    <span></span><span></span><span></span>
+            <template v-for="(msg, idx) in displayedMessages" :key="idx">
+                <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
+                    <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
+                    <div>
+                        <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                        <!-- Save as task button only on the last agent message -->
+                        <div class="msg-actions" v-if="msg.role === 'agent' && !isThinking && idx === lastAgentMessageIdx">
+                            <button class="btn-save-task" @click="saveAsTask(idx)" title="把这次对话的流程保存为可执行的任务">📌 保存为任务</button>
+                        </div>
+                    </div>
                 </div>
+                <div v-else class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+            </template>
+
+            <div v-if="isThinking" class="thinking-bar" @click="showToolDetails = !showToolDetails">
+                <div class="thinking-left">
+                    <span class="thinking-dot"></span>
+                    <span class="thinking-dot"></span>
+                    <span class="thinking-dot"></span>
+                    <span class="thinking-text">正在处理中</span>
+                </div>
+                <div class="thinking-right">
+                    <span v-if="toolMessages.length">查看详情 ({{ toolMessages.length }} 条)</span>
+                    <span v-if="!toolMessages.length">查看处理过程</span>
+                    <svg width="10" height="6" viewBox="0 0 12 8" :style="{transform: showToolDetails ? 'rotate(180deg)' : ''}" style="transition:transform .2s;opacity:.4;"><path d="M1 1L6 6L11 1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </div>
+            </div>
+            <div v-if="isThinking && showToolDetails && toolMessages.length > 0" class="thinking-details">
+                <div v-for="(t, ti) in toolMessages" :key="ti" class="thinking-detail-item">{{ t }}</div>
             </div>
         </div>
 
-        <div class="input-area">
+        <div v-if="activeView === 'chat'" class="input-area">
             <div class="uploaded-files" v-if="uploadedFiles.length > 0">
                 <div v-for="f in uploadedFiles" :key="f.filename" class="file-tag">
                     {{ f.filename }}
@@ -174,7 +475,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             <div class="input-row">
                 <textarea
                     v-model="inputText"
-                    placeholder="输入你的问题... (按 Ctrl+Enter 发送)"
+                    placeholder="输入你的问题... (Enter 发送，Shift+Enter 换行)"
                     @keydown="handleKeydown"
                     rows="1"
                     ref="inputEl"
@@ -189,9 +490,123 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             <div class="input-extras">
                 <input ref="fileInput" type="file" multiple style="display:none" @change="uploadFile">
                 <button class="btn-upload" type="button" @click="triggerFileUpload">上传文件</button>
-                <span>Ctrl+Enter 发送 | 点击左侧 + 号新建对话</span>
             </div>
         </div>
+
+        <!-- ========== TASKS VIEW ========== -->
+        <div v-if="activeView === 'tasks'" class="page-view">
+            <div class="page-toolbar">
+                <span class="toolbar-title">我的任务</span>
+                <button class="btn-sm primary" @click="createScheduledTask">+ 新建任务</button>
+                <div class="filter-tabs" style="margin-left:12px;">
+                    <button class="filter-tab" :class="{ active: taskFilter === 'all' }" @click="taskFilter = 'all'">全部</button>
+                    <button class="filter-tab" :class="{ active: taskFilter === 'scheduled' }" @click="taskFilter = 'scheduled'">定时</button>
+                    <button class="filter-tab" :class="{ active: taskFilter === 'manual' }" @click="taskFilter = 'manual'">手动</button>
+                    <button class="filter-tab" :class="{ active: taskFilter === 'pinned' }" @click="taskFilter = 'pinned'">⭐ 常用</button>
+                </div>
+                <span style="font-size:12px;color:var(--text2);margin-left:auto;">{{ filteredCronJobs.length }} 个任务</span>
+            </div>
+            <div class="page-list">
+                <div v-if="filteredCronJobs.length === 0" class="empty-state">
+                    <div class="empty-icon">📋</div>
+                    <div class="empty-title">{{ cronJobs.length === 0 ? '还没有任务' : '没有匹配的任务' }}</div>
+                    <div class="empty-hint" v-if="cronJobs.length === 0">点击「+ 新建任务」让智能体帮你创建，或在对话中完成流程后点「📌 保存为任务」</div>
+                </div>
+                <div v-for="job in filteredCronJobs" :key="job.id" class="card task-card">
+                    <div class="card-header">
+                        <span class="card-name">{{ job.name || '未命名任务' }}</span>
+                        <div style="display:flex;align-items:center;gap:4px;">
+                            <button class="btn-sm star" :class="{ active: isPinned(job.id) }" @click.stop="togglePin(job.id)" :title="isPinned(job.id) ? '取消常用' : '设为常用'">⭐</button>
+                            <span v-if="job.paused" class="badge gray">已暂停</span>
+                            <span v-else-if="job.schedule" class="badge blue">⏱ {{ formatSchedule(job.schedule) }}</span>
+                            <span v-else class="badge green">手动触发</span>
+                        </div>
+                    </div>
+                    <div class="card-desc">{{ job.prompt || '暂无描述' }}</div>
+                    <div class="card-meta" style="justify-content:space-between;">
+                        <span class="task-status">
+                            <span v-if="job.last_run_at">上次: {{ formatDate(job.last_run_at) }}</span>
+                            <span v-if="job.last_status" :class="job.last_status === 'ok' ? 'ok' : 'fail'">
+                                {{ job.last_status === 'ok' ? ' ✅' : ' ❌' }}
+                            </span>
+                        </span>
+                        <div style="display:flex;gap:4px;">
+                            <button class="btn-sm action" @click.stop="triggerJob(job.id)">▶ 执行</button>
+                            <button v-if="!job.paused && job.schedule" class="btn-sm warn" @click.stop="pauseJob(job.id)">⏸</button>
+                            <button v-if="job.paused" class="btn-sm action" @click.stop="resumeJob(job.id)">▶ 恢复</button>
+                            <button class="btn-sm danger" @click.stop="deleteJob(job.id)">✕</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== SKILLS VIEW ========== -->
+        <div v-if="activeView === 'skills'" class="page-view">
+            <div v-if="!skillDetailName">
+                <div class="skills-toolbar">
+                    <div class="skills-tabs">
+                        <button class="skills-tab" :class="{ active: skillsTab === 'mine' }" @click="skillsTab = 'mine'; loadInstalledSkills()">我的技能</button>
+                        <button class="skills-tab" :class="{ active: skillsTab === 'market' }" @click="switchToMarket()">技能市场</button>
+                    </div>
+                    <input v-if="skillsTab === 'market'" class="search-input" v-model="marketQuery" placeholder="搜索技能..." @keydown.enter="searchMarket">
+                    <span v-if="skillsTab === 'mine'" style="font-size:12px;color:var(--text2);margin-left:auto;">{{ installedSkills.length }} 个技能</span>
+                </div>
+                <div class="page-list">
+                    <div v-if="skillsTab === 'mine'">
+                        <div v-if="installedSkills.length === 0" class="empty-state">
+                            <div class="empty-icon">🧰</div>
+                            <div class="empty-title">还没有安装任何技能</div>
+                            <div class="empty-hint">前往「技能市场」挑选你需要的技能吧</div>
+                        </div>
+                        <div v-for="sk in installedSkills" :key="sk.name" class="card" @click="viewSkillDetail(sk.name)">
+                            <div class="card-header">
+                                <span class="card-name">{{ sk.name }}</span>
+                                <span :class="['badge', sk.enabled ? 'green' : 'gray']">{{ sk.enabled ? '已启用' : '已禁用' }}</span>
+                            </div>
+                            <div class="card-desc">{{ sk.description || '暂无描述' }}</div>
+                            <div class="card-meta">
+                                <span class="badge green" v-if="sk.category">{{ sk.category }}</span>
+                                <span class="badge" :class="{'green': sk.source === 'builtin', 'blue': sk.source === 'hub', 'red': sk.source === 'local'}" style="font-size:10px;">
+                                    {{ sk.source === 'builtin' ? '内置' : sk.source === 'hub' ? '市场' : '本地' }}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-if="skillsTab === 'market'">
+                        <div v-if="marketLoading" style="padding:40px;text-align:center;color:var(--text2);">正在从技能市场加载...</div>
+                        <div v-else-if="marketResults.length === 0 && marketQuery" style="padding:40px;text-align:center;color:var(--text2);">
+                            <div style="font-size:32px;margin-bottom:12px;">🔍</div>
+                            <div>没有找到「{{ marketQuery }}」相关技能</div>
+                            <div style="font-size:12px;margin-top:6px;">试试其他关键词，比如：办公、设计、数据分析</div>
+                        </div>
+                        <div v-else-if="marketResults.length === 0 && !marketQuery" style="padding:40px;text-align:center;color:var(--text2);">
+                            <div style="font-size:32px;margin-bottom:12px;">📦</div>
+                            <div>暂无推荐内容</div>
+                            <div style="font-size:12px;margin-top:6px;">请检查网络连接后重试</div>
+                        </div>
+                        <div v-for="sk in marketResults" :key="sk.identifier" class="card market-card" @click="viewMarketSkillDetail(sk)">
+                            <div class="card-header">
+                                <span class="card-name">{{ sk.name }}</span>
+                                <button v-if="!isSkillInstalled(sk.name)" class="install-btn" @click.stop="installSkill(sk)">获取</button>
+                                <span v-else class="badge green">已安装</span>
+                            </div>
+                            <div class="card-desc">{{ sk.description || '暂无描述' }}</div>
+                            <div class="card-meta">
+                                <span class="badge red" v-if="sk.source">{{ sk.source }}</span>
+                                <span class="badge purple" v-for="t in (sk.tags || []).slice(0,4)" :key="t">{{ t }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div v-if="skillDetailName" class="skill-detail-panel">
+                <button class="skill-detail-back" @click="skillDetailName = ''">← 返回</button>
+                <div v-if="skillDetailLoading" style="color:var(--text2);">加载中...</div>
+                <div v-else-if="skillDetailContent" class="skill-detail-content" v-html="skillDetailContent"></div>
+            </div>
+        </div>
+
     </div>
 
     <div class="log-panel" :class="{ collapsed: !showLog }">
@@ -205,8 +620,15 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             <span v-if="serverLogs.length === 0" style="color:#666;">暂无日志...</span>
         </div>
     </div>
+    <div v-if="contextMenu.visible" class="context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop @mouseleave="hideContextMenu">
+        <div class="context-menu-item danger" @click="deleteSession">删除对话</div>
+    </div>
+    <div v-if="rightClickMenu.visible" class="context-menu" :style="{ left: rightClickMenu.x + 'px', top: rightClickMenu.y + 'px' }" @click.stop @mouseleave="hideRightClickMenu">
+        <div class="context-menu-item" @click="copySelected" v-if="rightClickMenu.selected">复制选中文字</div>
+        <div class="context-menu-item" @click="copyAll">复制全部内容</div>
+    </div>
 </div>
 
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=15"></script>
 </body>
 </html>

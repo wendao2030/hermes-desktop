@@ -36,7 +36,7 @@ from utils import is_truthy_value, normalize_proxy_env_vars
 
 # --- FastAPI ---
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -49,7 +49,6 @@ load_hermes_dotenv(hermes_home=HERMES_HOME, project_env=PROJECT_ENV)
 normalize_proxy_env_vars()
 
 SESSION_SOURCE = "desktop"
-NATIVE_BUBBLE_ENABLED = False
 
 def load_config():
     return load_hermes_config()
@@ -537,6 +536,17 @@ async def interrupt_session(session_id: str):
             raise HTTPException(status_code=500, detail=str(e))
     return {"ok": False, "status": "unsupported"}
 
+@app.delete("/api/session/{session_id}")
+async def delete_session(session_id: str):
+    with session_lock:
+        if session_id in sessions:
+            del sessions[session_id]
+    try:
+        session_db.delete_session(session_id)
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] DB delete failed: {e}")
+    return {"ok": True}
+
 @app.post("/api/upload/{session_id}")
 async def upload_file(session_id: str, file: UploadFile = File(...)):
     session_dir = get_session_dir(session_id) / "uploads"
@@ -579,22 +589,391 @@ async def download_file(session_id: str, filename: str):
 
 @app.get("/api/skills")
 async def list_skills():
-    """Get available agent skills."""
-    skills_dir = HERMES_HOME / "skills"
-    if not skills_dir.exists():
-        return {"skills": []}
+    """List installed skills using native hermes-agent."""
+    try:
+        from tools.skills_tool import _find_all_skills
+        from agent.skill_utils import get_disabled_skill_names
+        from hermes_constants import get_hermes_home
 
-    skills = []
-    for item in sorted(skills_dir.iterdir()):
-        if item.is_dir() and not item.name.startswith("."):
-            skill_md = item / "SKILL.md"
-            if skill_md.exists():
+        all_skills = _find_all_skills(skip_disabled=False)
+        disabled = get_disabled_skill_names()
+
+        # Determine skill source: bundled, hub, or local
+        skills_dir = get_hermes_home() / "skills"
+        bundled_names = set()
+        hub_names = set()
+
+        bundled_manifest = skills_dir / ".bundled_manifest"
+        if bundled_manifest.exists():
+            try:
+                for line in bundled_manifest.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line:
+                        bundled_names.add(line.split(":", 1)[0].strip())
+            except Exception:
+                pass
+
+        hub_lock = skills_dir / ".hub" / "lock.json"
+        if hub_lock.exists():
+            try:
+                import json
+                data = json.loads(hub_lock.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    for name in (data.get("installed") or {}).keys():
+                        hub_names.add(str(name))
+            except Exception:
+                pass
+
+        def _skill_source(name):
+            if name in bundled_names:
+                return "builtin"
+            if name in hub_names:
+                return "hub"
+            return "local"
+
+        result = []
+        for s in all_skills:
+            name = s.get("name", "")
+            result.append({
+                "name": name,
+                "description": s.get("description", ""),
+                "category": s.get("category", ""),
+                "enabled": name not in disabled,
+                "source": _skill_source(name),
+            })
+        return {"skills": result, "count": len(result)}
+    except Exception as e:
+        log_msg("WARN", f"Skills list failed: {e}")
+        return {"skills": [], "count": 0, "error": str(e)}
+
+@app.get("/api/skills/featured")
+async def get_featured_skills():
+    """Get featured/popular skills. Tries uskill.cn first (domestic CDN, fast),
+    falls back to built-in Chinese recommendations if network fails."""
+    try:
+        import httpx
+        resp = httpx.get("https://www.uskill.cn/api/skills?pageSize=20", timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            skills = []
+            for sk in (data.get("skills") or [])[:20]:
+                meta = sk.get("metadata", {})
+                tags = meta.get("tags", [])
+                # Map English tags to Chinese
+                tag_map = {
+                    "API": "接口", "React": "前端", "Vue": "前端", "Next.js": "前端",
+                    "GitHub": "代码托管", "CI/CD": "自动化部署", "DevOps": "运维",
+                    "Claude": "AI助手", "Excel": "电子表格", "Word": "文档",
+                    "PDF": "文档处理", "PPT": "演示文稿", "Notion": "笔记",
+                    "Database": "数据库", "Agent": "智能体", "Workflow": "工作流",
+                    "框架": "开发", "文档": "文档工具", "编辑": "文本处理",
+                    "分析": "数据分析", "设计": "UI设计", "集成": "系统集成",
+                    "测试": "软件测试", "自动化": "自动执行", "智能体": "AI智能体",
+                    "任务": "效率工具", "模板": "模板生成", "技能": "扩展能力",
+                    "网页": "Web开发", "代码": "编程", "安全": "安全审计",
+                    "协作": "团队协作", "部署": "运维发布",
+                }
+                cn_tags = [tag_map.get(t, t) for t in tags[:3]]
+                
+                # Get the best description: use enriched Chinese desc if available
+                title = meta.get("title", sk.get("name", ""))
+                short_zh = meta.get("shortDescZh", "") or ""
+                en_desc = meta.get("description", "") or ""
+                md_content = sk.get("markdown", "") or ""
+                
+                # Try enrichment map first, then fallback strategies
+                desc = _enrich_skill_description(title, short_zh, en_desc, md_content)
                 skills.append({
-                    "name": item.name,
-                    "display": item.name.replace("-", " ").title(),
-                    "path": str(skill_md.relative_to(HERMES_HOME)),
+                    "name": title,
+                    "description": desc[:180],
+                    "source": "uskill.cn",
+                    "identifier": meta.get("url", ""),
+                    "trust_level": "community",
+                    "tags": cn_tags,
+                    "install_cmd": f"skills install {title}",
                 })
-    return {"skills": skills}
+            if skills:
+                return {"skills": skills, "count": len(skills), "source": "uskill.cn"}
+    except Exception:
+        pass
+
+    # Fallback to built-in Chinese recommendations
+    skills = _builtin_recommended_skills()
+    return {"skills": skills, "count": len(skills), "source": "builtin"}
+
+def _enrich_skill_description(title: str, short_zh: str, en_desc: str, md_content: str) -> str:
+    """Pick the best description for a skill. Prefers Chinese enrichment,
+    falls back to English description if short_zh is too brief."""
+    # If short_zh is a keyword list (like "文档、编辑、分析、Claude 相关"), it's too brief
+    if short_zh and not short_zh.endswith("相关") and len(short_zh) > 20:
+        return short_zh
+
+    # Common skills with Chinese descriptions
+    cn_map = {
+        "docx": "创建和编辑 Word 文档，支持修订追踪、批注、格式保留和文字提取，适合写报告、合同、论文等专业文档",
+        "xlsx": "创建和编辑 Excel 电子表格，支持公式计算、数据分析和图表可视化，处理 .xlsx/.csv 格式文件",
+        "pptx": "创建和编辑 PowerPoint 演示文稿，支持完整幻灯片操作、排版设计和动画效果",
+        "pdf": "全能 PDF 处理工具：提取文字、创建表单、合并拆分文档、加水印和签名",
+        "skill-creator": "创建自定义技能的指南，零基础也能上手，用自然语言描述需求即可生成专属技能",
+        "mcp-builder": "创建 MCP 服务器，让 AI 连接外部 API 和工具，打通各种软件平台",
+        "theme-factory": "一键套用预设主题到幻灯片、文档、网页，10 套精美主题可选",
+        "web-artifacts-builder": "用 React 和 HTML/CSS 快速搭建可交互网页小组件，做工具页面和数据看板",
+        "algorithmic-art": "用 p5.js 创作算法生成艺术作品，输入创意即可生成独一无二的视觉图案",
+        "canvas-design": "用 Canvas 设计精美视觉图形和海报，适合宣传图、活动物料和社交媒体配图",
+        "frontend-design": "快速生成漂亮的前端页面，支持 React/HTML/CSS，做网站和落地页非常方便",
+        "slack-gif-creator": "制作动画 GIF，支持聊天斗图、产品演示和教学示范",
+        "internal-comms": "撰写专业内部通讯：周报、新闻稿、FAQ、通知公告，一键生成规范格式",
+        "webapp-testing": "用 Playwright 自动测试网站功能和性能，检测无障碍性，帮你发现 Bug",
+        "brand-guidelines": "自动应用品牌配色和字体规范，确保所有设计输出风格统一",
+        "notion": "Notion API 集成工具，可创建和管理页面、数据库、块，自动化你的笔记工作流",
+        "prompting": "智能提示词生成系统，用模板和最佳实践优化你的 AI 对话效果",
+        "n8n-workflow-patterns": "n8n 工作流自动化模板，包含 Webhook、API 集成、数据库操作和 AI 智能体模式",
+    }
+    if title in cn_map:
+        return cn_map[title]
+
+    # Fallback: use English description (first 180 chars, cut at sentence boundary)
+    if en_desc:
+        # Find a good sentence break within 180 chars
+        cut = en_desc[:180]
+        if len(en_desc) > 180:
+            last_dot = cut.rfind(". ")
+            if last_dot > 60:
+                cut = cut[:last_dot + 1]
+        return cut
+
+    # Last resort: use short_zh even if brief
+    return short_zh or "暂无描述"
+
+@app.get("/api/skills/{name}")
+async def get_skill_detail(name: str):
+    """View skill content using native hermes-agent."""
+    try:
+        from tools.skills_tool import skill_view
+        return json.loads(skill_view(name))
+    except Exception as e:
+        log_msg("WARN", f"Skill view failed for '{name}': {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/api/skills/{name}/toggle")
+async def toggle_skill(name: str):
+    """Enable/disable a skill via config."""
+    try:
+        from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+        cfg = load_config()
+        disabled = get_disabled_skills(cfg)
+        if name in disabled:
+            disabled.remove(name)
+            enabled = True
+        else:
+            disabled.add(name)
+            enabled = False
+        save_disabled_skills(cfg, disabled)
+        return {"ok": True, "name": name, "enabled": enabled}
+    except Exception as e:
+        log_msg("WARN", f"Toggle skill failed for '{name}': {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/skills/search/market")
+async def search_skills_market(q: str = "", source: str = "all", limit: int = 20):
+    """Search skills hub using native hermes-agent."""
+    try:
+        from tools.skills_hub import unified_search, create_source_router, GitHubAuth
+        auth = GitHubAuth()
+        sources = create_source_router(auth)
+        results = unified_search(q, sources, source_filter=source, limit=limit)
+        return {
+            "skills": [
+                {
+                    "name": r.name,
+                    "description": r.description,
+                    "source": r.source,
+                    "identifier": r.identifier,
+                    "trust_level": r.trust_level,
+                    "tags": r.tags,
+                }
+                for r in results
+            ],
+            "count": len(results),
+        }
+    except Exception as e:
+        log_msg("WARN", f"Market search failed: {e}")
+        return {"skills": [], "count": 0, "error": str(e)}
+
+def _builtin_recommended_skills():
+    """精选推荐技能列表（中文描述，面向普通用户）"""
+    return [
+        {"name": "PPT 制作", "description": "创建、编辑和分析 PowerPoint 演示文稿，支持完整幻灯片操作，做汇报、课件、方案演示必备", "source": "推荐", "identifier": "skills-sh/anthropics/skills/pptx", "trust_level": "trusted", "tags": ["办公", "演示"]},
+        {"name": "PDF 处理", "description": "全能 PDF 工具：提取文字、创建表单、合并拆分文档、加水印签名，轻松处理各类 PDF 文件", "source": "推荐", "identifier": "skills-sh/anthropics/skills/pdf", "trust_level": "trusted", "tags": ["办公", "文档"]},
+        {"name": "Word 文档", "description": "创建和编辑 Word 文档，支持修订追踪、批注、格式保留、文字提取，写报告合同不用愁", "source": "推荐", "identifier": "skills-sh/anthropics/skills/docx", "trust_level": "trusted", "tags": ["办公", "文档"]},
+        {"name": "Excel 表格", "description": "创建和编辑 Excel 电子表格，支持公式计算、格式化、数据分析和图表可视化", "source": "推荐", "identifier": "skills-sh/anthropics/skills/xlsx", "trust_level": "trusted", "tags": ["办公", "表格"]},
+        {"name": "网页设计", "description": "快速生成漂亮的前端页面，支持 React、HTML/CSS，做网站、落地页、H5 活动页非常方便", "source": "推荐", "identifier": "skills-sh/anthropics/skills/frontend-design", "trust_level": "trusted", "tags": ["设计", "网页"]},
+        {"name": "主题美化", "description": "一键套用预设主题到幻灯片、文档、网页，10 套精美主题可选，让你的作品瞬间好看", "source": "推荐", "identifier": "skills-sh/anthropics/skills/theme-factory", "trust_level": "trusted", "tags": ["设计", "美化"]},
+        {"name": "算法艺术", "description": "用 p5.js 创作算法生成的艺术作品，输入创意就能生成独一无二的视觉图案", "source": "推荐", "identifier": "skills-sh/anthropics/skills/algorithmic-art", "trust_level": "trusted", "tags": ["创意", "艺术"]},
+        {"name": "画布设计", "description": "用 Canvas 设计精美的视觉图形和海报，适合做宣传图、活动物料、社交媒体配图", "source": "推荐", "identifier": "skills-sh/anthropics/skills/canvas-design", "trust_level": "trusted", "tags": ["创意", "设计"]},
+        {"name": "动图制作", "description": "制作 Slack 等平台适用的动画 GIF，聊天斗图、产品演示、教学示范都能用", "source": "推荐", "identifier": "skills-sh/anthropics/skills/slack-gif-creator", "trust_level": "trusted", "tags": ["创意", "动图"]},
+        {"name": "公司文案", "description": "撰写专业内部通讯：周报月报、新闻稿、FAQ、通知公告，一键生成规范格式", "source": "推荐", "identifier": "skills-sh/anthropics/skills/internal-comms", "trust_level": "trusted", "tags": ["写作", "商务"]},
+        {"name": "网页测试", "description": "用 Playwright 自动测试网站功能，检测无障碍性、页面性能，帮你发现 Bug", "source": "推荐", "identifier": "skills-sh/anthropics/skills/webapp-testing", "trust_level": "trusted", "tags": ["开发", "测试"]},
+        {"name": "制作技能", "description": "教你如何自己创建新技能，零基础也能上手，用自然语言描述你需要的功能即可", "source": "推荐", "identifier": "skills-sh/openai/skills/skill-creator", "trust_level": "trusted", "tags": ["入门", "自定义"]},
+        {"name": "MCP 对接", "description": "教你创建 MCP 服务器，让 AI 连接外部 API 和工具，打通各种软件和平台", "source": "推荐", "identifier": "skills-sh/anthropics/skills/mcp-builder", "trust_level": "trusted", "tags": ["开发", "集成"]},
+        {"name": "网页小组件", "description": "用 React 和 HTML/CSS 快速搭建可交互的网页小组件，做工具页面、数据看板很方便", "source": "推荐", "identifier": "skills-sh/anthropics/skills/web-artifacts-builder", "trust_level": "trusted", "tags": ["开发", "网页"]},
+        {"name": "品牌规范", "description": "自动应用品牌配色和字体规范，确保所有设计输出风格统一，企业品牌管理必备", "source": "推荐", "identifier": "skills-sh/anthropics/skills/brand-guidelines", "trust_level": "trusted", "tags": ["设计", "品牌"]},
+    ]
+
+@app.post("/api/skills/install")
+async def install_skill(request: dict):
+    """Install a skill from hub. Body: {"identifier": "...", "name": "..."} """
+    identifier = request.get("identifier", "")
+    name = request.get("name", "")
+    if not identifier and not name:
+        raise HTTPException(status_code=400, detail="identifier or name required")
+    try:
+        from tools.skills_hub import (
+            GitHubAuth, create_source_router, ensure_hub_dirs,
+            quarantine_bundle, install_from_quarantine,
+        )
+        from tools.skills_guard import scan_skill, should_allow_install
+        auth = GitHubAuth()
+        sources = create_source_router(auth)
+        ensure_hub_dirs()
+
+        bundle = None
+
+        # Strategy 1: try identifier directly (works for skills-sh/owner/repo/skill format)
+        if identifier:
+            for src in sources:
+                try:
+                    bundle = src.fetch(identifier)
+                except Exception:
+                    pass
+                if bundle:
+                    break
+
+        # Strategy 2: if identifier is a URL, try as direct URL fetch
+        if not bundle and identifier and identifier.startswith("http"):
+            from tools.skills_hub import UrlSource
+            url_src = UrlSource()
+            try:
+                bundle = url_src.fetch(identifier)
+            except Exception:
+                pass
+
+        # Strategy 3: search by name across all sources
+        if not bundle and name:
+            from tools.skills_hub import unified_search
+            results = unified_search(name, sources, limit=5)
+            for r in results:
+                try:
+                    for src in sources:
+                        if src.source_id() == r.source:
+                            bundle = src.fetch(r.identifier)
+                            if bundle:
+                                break
+                    if bundle:
+                        break
+                except Exception:
+                    pass
+
+        if not bundle:
+            return {"ok": False, "error": f"No source found for: {name or identifier}"}
+
+        # Scan and install
+        result = scan_skill(bundle)
+        if not should_allow_install(result):
+            return {"ok": False, "error": f"Security scan blocked: {result.summary}"}
+
+        quarantine_bundle(bundle)
+        install_from_quarantine(bundle, force=False)
+        return {"ok": True, "name": bundle.meta.name if bundle.meta else (name or identifier)}
+    except Exception as e:
+        log_msg("WARN", f"Install skill failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.delete("/api/skills/{name}")
+async def delete_skill(name: str):
+    """Uninstall a skill."""
+    try:
+        from tools.skills_hub import uninstall_skill
+        ok, msg = uninstall_skill(name)
+        return {"ok": ok, "message": msg}
+    except Exception as e:
+        log_msg("WARN", f"Uninstall skill failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+# ---------------------------------------------------------------------------
+# Cron / Scheduled Tasks API (delegates to hermes-agent cron.jobs)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/cron/jobs")
+async def list_cron_jobs():
+    """List all scheduled cron jobs."""
+    try:
+        from cron.jobs import list_jobs
+        jobs = list_jobs(include_disabled=False)
+        return jobs
+    except Exception as e:
+        log_msg("WARN", f"List cron jobs failed: {e}")
+        return []
+
+@app.post("/api/cron/jobs/{job_id}/trigger")
+async def trigger_cron_job(job_id: str):
+    """Trigger a cron job immediately."""
+    try:
+        from cron.jobs import trigger_job
+        job = trigger_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {"ok": True, "job": job}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Trigger cron job failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/cron/jobs/{job_id}/pause")
+async def pause_cron_job(job_id: str):
+    """Pause a cron job."""
+    try:
+        from cron.jobs import pause_job
+        job = pause_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {"ok": True, "job": job}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Pause cron job failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/cron/jobs/{job_id}/resume")
+async def resume_cron_job(job_id: str):
+    """Resume a paused cron job."""
+    try:
+        from cron.jobs import resume_job
+        job = resume_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {"ok": True, "job": job}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Resume cron job failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.delete("/api/cron/jobs/{job_id}")
+async def delete_cron_job(job_id: str):
+    """Delete a cron job."""
+    try:
+        from cron.jobs import remove_job
+        ok = remove_job(job_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Delete cron job failed: {e}")
+        return {"ok": False, "error": str(e)}
 
 def register_browser_bubble_fallbacks():
     """Install no-op bubble endpoints for browser/uvicorn development mode."""
@@ -821,6 +1200,11 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
 # --- Startup ---
 
 if __name__ == "__main__":
+    import argparse
+    _ap = argparse.ArgumentParser()
+    _ap.add_argument("--bubble-only", action="store_true", help="Start with floating bubble only (no main window)")
+    _args, _unknown = _ap.parse_known_args()
+
     try:
         import time as _time
         NATIVE_BUBBLE_ENABLED = True
@@ -831,6 +1215,8 @@ if __name__ == "__main__":
     host = "127.0.0.1"
     port = 8765
     url = f"http://{host}:{port}"
+
+    BUBBLE_ONLY = _args.bubble_only
 
     # Start uvicorn in a background daemon thread
     server_config = uvicorn.Config(app, host=host, port=port, log_level="warning")
@@ -849,28 +1235,10 @@ if __name__ == "__main__":
             pass
     log_msg("INFO", f"Server ready on port {port}")
 
-    # Open native desktop window (no browser!)
-    import webview
-    log_msg("INFO", "Opening native desktop window...")
-    # Window icon (pywebview WebView2 backend ignores 'icon' param on Windows)
+    # --- Win32: set custom icon + floating bubble widget ---
     icon_path = str(STATIC_DIR / "hermes.ico")
     logo_path = str(STATIC_DIR / "hermes_logo.png")
-    bubble_pony_path = str(STATIC_DIR / "bubble_pony_idle.bmp")
 
-    window_args = {
-        "title": "Hermes Desktop",
-        "url": url,
-        "width": 1100,
-        "height": 750,
-        "min_size": (700, 500),
-        "resizable": True,
-    }
-    try:
-        window = webview.create_window(**window_args, icon=icon_path)
-    except TypeError:
-        window = webview.create_window(**window_args)
-
-    # --- Win32: set custom icon + floating bubble widget ---
     import ctypes as _ct
     from ctypes import wintypes as _wt
     _kernel32 = _ct.windll.kernel32
@@ -887,17 +1255,6 @@ if __name__ == "__main__":
             ("fRestore", _wt.BOOL),
             ("fIncUpdate", _wt.BOOL),
             ("rgbReserved", _ct.c_byte * 32),
-        ]
-
-    class _BITMAP(_ct.Structure):
-        _fields_ = [
-            ("bmType", _wt.LONG),
-            ("bmWidth", _wt.LONG),
-            ("bmHeight", _wt.LONG),
-            ("bmWidthBytes", _wt.LONG),
-            ("bmPlanes", _wt.WORD),
-            ("bmBitsPixel", _wt.WORD),
-            ("bmBits", _wt.LPVOID),
         ]
 
     def _configure_win32_signatures():
@@ -940,6 +1297,12 @@ if __name__ == "__main__":
             _wt.HWND, _wt.COLORREF, _wt.BYTE, _wt.DWORD,
         ]
         _user32.SetLayeredWindowAttributes.restype = _wt.BOOL
+        _user32.UpdateLayeredWindow.argtypes = [
+            _wt.HWND, _wt.HDC, _ct.POINTER(_wt.POINT), _ct.POINTER(_wt.SIZE),
+            _wt.HDC, _ct.POINTER(_wt.POINT), _wt.COLORREF,
+            _ct.c_void_p, _wt.DWORD,
+        ]
+        _user32.UpdateLayeredWindow.restype = _wt.BOOL
         _user32.SetWindowRgn.argtypes = [_wt.HWND, _wt.HRGN, _wt.BOOL]
         _user32.SetWindowRgn.restype = _ct.c_int
         _user32.InvalidateRect.argtypes = [_wt.HWND, _ct.POINTER(_wt.RECT), _wt.BOOL]
@@ -1038,17 +1401,12 @@ if __name__ == "__main__":
     WM_CLOSE = 0x0010
 
     WM_NCHITTEST = 0x84
-    HTCLIENT = 1
+    WM_NCLBUTTONDBLCLK = 0x00A3
     HTCAPTION = 2
     WM_LBUTTONDBLCLK = 0x203
     WM_RBUTTONDOWN = 0x204
-    WM_MOUSEMOVE = 0x200
     WM_PAINT = 0x000F
     WM_DESTROY = 0x0002
-    WM_TIMER = 0x0113
-
-    WH_CALLWNDPROC = 4
-    GWLP_WNDPROC = -4
 
     # GDI objects
     TRANSPARENT = 1
@@ -1056,31 +1414,59 @@ if __name__ == "__main__":
     RGB_FORMAT = lambda r, g, b: (r) | (g << 8) | (b << 16)
     COLOR_KEY = RGB_FORMAT(255, 0, 255)  # magenta as transparent
 
-    BUBBLE_SIZE = 72
-    BUBBLE_RADIUS = BUBBLE_SIZE // 2
+    BUBBLE_SIZE = 80
 
     # Shared state for the floating bubble
     _bubble_state = {
         "hwnd": None,
         "visible": False,
         "text": "",
-        "dragging": False,
-        "drag_offset": (0, 0),
-        "logo_hbitmap": None,
         "main_hwnd": None,
-        "pulse_phase": 0.0,
         "ready_event": threading.Event(),
+        "logo_hbitmap": None,  # HBITMAP of the bubble icon
     }
 
-    def _create_round_region(cx, cy, radius):
-        """Create an elliptical (circular) region for clipping."""
-        return _gdi32.CreateEllipticRgn(
-            cx - radius, cy - radius,
-            cx + radius, cy + radius,
-        )
+    def _load_bubble_png(png_path):
+        """Convert PNG to BMP with magenta background, then load as HBITMAP via LoadImageW."""
+        try:
+            from PIL import Image as _PILImage
+            import io as _io
+
+            if not os.path.exists(png_path):
+                return False
+
+            # Open PNG, resize with high-quality scaling
+            pil_img = _PILImage.open(png_path).convert("RGBA")
+            pil_img = pil_img.resize((BUBBLE_SIZE, BUBBLE_SIZE), _PILImage.LANCZOS)
+
+            # Create a magenta background image
+            bg = _PILImage.new("RGBA", pil_img.size, (255, 0, 255, 255))
+            # Composite PNG onto magenta background
+            composite = _PILImage.alpha_composite(bg, pil_img)
+
+            # Save as BMP to memory
+            bmp_bytes = _io.BytesIO()
+            composite.save(bmp_bytes, format="BMP")
+            bmp_data = bmp_bytes.getvalue()
+
+            # Write BMP to temp file for LoadImageW
+            temp_bmp = str(STATIC_DIR / "_bubble_temp.bmp")
+            with open(temp_bmp, "wb") as f:
+                f.write(bmp_data)
+
+            # Load BMP via Win32 LoadImageW
+            IMAGE_BITMAP = 0
+            LR_LOADFROMFILE = 0x0010
+            hbitmap = _user32.LoadImageW(None, temp_bmp, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE)
+            if hbitmap:
+                _bubble_state["logo_hbitmap"] = hbitmap
+                return True
+            return False
+        except Exception:
+            return False
 
     def _draw_bubble(hwnd):
-        """Paint the circular floating bubble."""
+        """Paint the circular floating bubble - icon + status text."""
         ps = _PAINTSTRUCT()
         hdc = _user32.BeginPaint(hwnd, _ct.byref(ps))
         if not hdc:
@@ -1088,10 +1474,11 @@ if __name__ == "__main__":
 
         rect = _wt.RECT()
         _user32.GetClientRect(hwnd, _ct.byref(rect))
+        w, h = rect.right, rect.bottom
 
         # Create memory DC for double buffering
         mem_dc = _gdi32.CreateCompatibleDC(hdc)
-        bmp = _gdi32.CreateCompatibleBitmap(hdc, rect.right, rect.bottom)
+        bmp = _gdi32.CreateCompatibleBitmap(hdc, w, h)
         old_bmp = _gdi32.SelectObject(mem_dc, bmp)
 
         # Fill with transparent color key (magenta)
@@ -1099,87 +1486,45 @@ if __name__ == "__main__":
         _user32.FillRect(mem_dc, _ct.byref(rect), magenta_brush)
         _gdi32.DeleteObject(magenta_brush)
 
-        cx, cy = rect.right // 2, rect.bottom // 2
-        r = min(cx, cy) - 3
+        cx, cy = w // 2, h // 2
 
-        # Soft outer glow/shadow.
-        for i in range(5, 0, -1):
-            brush_color = RGB_FORMAT(178 - i * 8, 118 - i * 4, 70 - i * 2)
-            b = _gdi32.CreateSolidBrush(brush_color)
-            _gdi32.SelectObject(mem_dc, b)
-            _gdi32.Ellipse(mem_dc, cx - r - i, cy - r - i, cx + r + i, cy + r + i)
-            _gdi32.DeleteObject(b)
-
-        # White ring, warm badge background, and inner highlight.
-        ring_brush = _gdi32.CreateSolidBrush(RGB_FORMAT(255, 255, 255))
-        _gdi32.SelectObject(mem_dc, ring_brush)
-        _gdi32.Ellipse(mem_dc, cx - r, cy - r, cx + r, cy + r)
-        _gdi32.DeleteObject(ring_brush)
-
-        bg_r = r - 4
-        bg_brush = _gdi32.CreateSolidBrush(RGB_FORMAT(255, 208, 128))
-        _gdi32.SelectObject(mem_dc, bg_brush)
-        _gdi32.Ellipse(mem_dc, cx - bg_r, cy - bg_r, cx + bg_r, cy + bg_r)
-        _gdi32.DeleteObject(bg_brush)
-
-        highlight_r = int(bg_r * 0.74)
-        hl_brush = _gdi32.CreateSolidBrush(RGB_FORMAT(255, 229, 160))
-        _gdi32.SelectObject(mem_dc, hl_brush)
-        _gdi32.Ellipse(mem_dc, cx - highlight_r, cy - highlight_r - 6,
-                        cx + highlight_r, cy + highlight_r - 2)
-        _gdi32.DeleteObject(hl_brush)
-
-        # Try to draw logo image if available
-        try:
-            if _bubble_state["logo_hbitmap"]:
-                # Create compatible DC and select logo bitmap
-                logo_dc = _gdi32.CreateCompatibleDC(mem_dc)
-                old_logo_bmp = _gdi32.SelectObject(logo_dc, _bubble_state["logo_hbitmap"])
-                # Get logo dimensions
-                bmi = _BITMAP()
-                _gdi32.GetObjectW(_bubble_state["logo_hbitmap"], _ct.sizeof(bmi), _ct.byref(bmi))
-                logo_w, logo_h = bmi.bmWidth, bmi.bmHeight
-                logo_size = int(r * 1.78)
-                logo_x = cx - logo_size // 2
-                logo_y = cy - logo_size // 2 - 1
-                _gdi32.StretchBlt(mem_dc, logo_x, logo_y, logo_size, logo_size,
-                                 logo_dc, 0, 0, logo_w, logo_h, SRCCOPY)
-                _gdi32.SelectObject(logo_dc, old_logo_bmp)
-                _gdi32.DeleteDC(logo_dc)
-        except Exception:
-            pass
-
-        # Draw text at bottom of bubble
-        text = _bubble_state.get("text", "")
-        if text:
-            # Set text properties
+        # Draw icon HBITMAP (if loaded)
+        logo_bmp = _bubble_state.get("logo_hbitmap")
+        if logo_bmp:
+            # BMP is already BUBBLE_SIZE x BUBBLE_SIZE, just copy 1:1
+            logo_dc = _gdi32.CreateCompatibleDC(mem_dc)
+            old_logo = _gdi32.SelectObject(logo_dc, logo_bmp)
+            _gdi32.BitBlt(mem_dc, 0, 0, w, h, logo_dc, 0, 0, SRCCOPY)
+            _gdi32.SelectObject(logo_dc, old_logo)
+            _gdi32.DeleteDC(logo_dc)
+        else:
+            # Fallback: "H" letter
             _gdi32.SetBkMode(mem_dc, TRANSPARENT)
-            _gdi32.SetTextAlign(mem_dc, 1)  # TA_CENTER
-            font = _gdi32.CreateFontW(-12, 0, 0, 0, 400, False, False, False,
-                                       0x86, 0, 0, 0, 0, "Microsoft YaHei UI")
-            old_font = _gdi32.SelectObject(mem_dc, font)
-            _gdi32.SetTextColor(mem_dc, RGB_FORMAT(255, 255, 240))
-
-            # Truncate text to fit
-            display_text = text[:10] + ("..." if len(text) > 10 else "")
-            _user32.TextOutW(mem_dc, cx, cy + r - 16, display_text, len(display_text))
-
-            _gdi32.SelectObject(mem_dc, old_font)
-            _gdi32.DeleteObject(font)
-        elif not _bubble_state.get("logo_hbitmap"):
-            # Default "H" letter when no bitmap is available.
-            font = _gdi32.CreateFontW(-28, 0, 0, 0, 700, False, False, False,
+            _gdi32.SetTextAlign(mem_dc, 1)
+            font = _gdi32.CreateFontW(-32, 0, 0, 0, 700, False, False, False,
                                        0x86, 0, 0, 0, 0, "Segoe UI")
             old_font = _gdi32.SelectObject(mem_dc, font)
             _gdi32.SetTextColor(mem_dc, RGB_FORMAT(255, 255, 255))
-            _gdi32.SetBkMode(mem_dc, TRANSPARENT)
-            _gdi32.SetTextAlign(mem_dc, 1)
             _user32.TextOutW(mem_dc, cx, cy - 10, "H", 1)
             _gdi32.SelectObject(mem_dc, old_font)
             _gdi32.DeleteObject(font)
 
+        # Draw status text at bottom (on top of icon)
+        text = _bubble_state.get("text", "")
+        if text:
+            _gdi32.SetBkMode(mem_dc, TRANSPARENT)
+            _gdi32.SetTextAlign(mem_dc, 1)
+            font = _gdi32.CreateFontW(-11, 0, 0, 0, 400, False, False, False,
+                                       0x86, 0, 0, 0, 0, "Microsoft YaHei UI")
+            old_font = _gdi32.SelectObject(mem_dc, font)
+            _gdi32.SetTextColor(mem_dc, RGB_FORMAT(255, 255, 240))
+            display_text = text[:8] + ("..." if len(text) > 8 else "")
+            _user32.TextOutW(mem_dc, cx, h - 10, display_text, len(display_text))
+            _gdi32.SelectObject(mem_dc, old_font)
+            _gdi32.DeleteObject(font)
+
         # Blit to screen
-        _gdi32.BitBlt(hdc, 0, 0, rect.right, rect.bottom, mem_dc, 0, 0, SRCCOPY)
+        _gdi32.BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY)
 
         # Cleanup
         _gdi32.SelectObject(mem_dc, old_bmp)
@@ -1198,28 +1543,35 @@ if __name__ == "__main__":
 
         @_BubbleWndProcType
         def bubble_wndproc(hwnd, msg, wparam, lparam):
-            if msg == WM_NCHITTEST:
-                return HTCAPTION  # allow dragging anywhere
-            elif msg == WM_PAINT:
-                _draw_bubble(hwnd)
-                return 0
-            elif msg == WM_LBUTTONDBLCLK:
-                # Double-click to restore main window
-                _restore_from_bubble()
-                return 0
-            elif msg == WM_RBUTTONDOWN:
-                # Right-click menu
-                x = lparam & 0xFFFF
-                y = (lparam >> 16) & 0xFFFF
-                _show_context_menu(x, y)
-                return 0
-            elif msg == WM_DESTROY:
-                if _bubble_state.get("logo_hbitmap"):
-                    _gdi32.DeleteObject(_bubble_state["logo_hbitmap"])
-                    _bubble_state["logo_hbitmap"] = None
-                _user32.PostQuitMessage(0)
-                return 0
-            else:
+            try:
+                if msg == WM_NCHITTEST:
+                    return HTCAPTION  # allow dragging anywhere
+                elif msg == WM_PAINT:
+                    _draw_bubble(hwnd)
+                    return 0
+                elif msg == WM_LBUTTONDBLCLK:
+                    # Double-click to restore main window
+                    _restore_from_bubble()
+                    return 0
+                elif msg == WM_NCLBUTTONDBLCLK:
+                    # HTCAPTION makes Windows send non-client double-click too
+                    _restore_from_bubble()
+                    return 0
+                elif msg == WM_RBUTTONDOWN:
+                    # Right-click menu
+                    x = lparam & 0xFFFF
+                    y = (lparam >> 16) & 0xFFFF
+                    _show_context_menu(x, y)
+                    return 0
+                elif msg == WM_DESTROY:
+                    if _bubble_state.get("logo_hbitmap"):
+                        _gdi32.DeleteObject(_bubble_state["logo_hbitmap"])
+                        _bubble_state["logo_hbitmap"] = None
+                    _user32.PostQuitMessage(0)
+                    return 0
+                else:
+                    return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+            except Exception:
                 return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
         return bubble_wndproc
@@ -1228,11 +1580,10 @@ if __name__ == "__main__":
 
     def _show_context_menu(x, y):
         """Show right-click context menu for bubble."""
-        from ctypes import POINTER, c_int
-
         hmenu = _user32.CreatePopupMenu()
-        _user32.AppendMenuW(hmenu, 0, 1001, "\u25a0 \u6062\u590d\u7a97\u53e3")     # Restore Window
-        _user32.AppendMenuW(hmenu, 0, 1002, "\u2715 \u9000\u51fa\u7a0b\u5e8f")      # Exit Program
+        _user32.AppendMenuW(hmenu, 0, 1001, "\u6062\u590d\u7a97\u53e3")     # Restore Window
+        _user32.AppendMenuW(hmenu, 0x800, 0, "")                            # Separator
+        _user32.AppendMenuW(hmenu, 0, 1002, "\u9000\u51fa\u7a0b\u5e8f")     # Exit Program
 
         ret = _user32.TrackPopupMenu(hmenu, 0x108, x, y, 0, _bubble_state["hwnd"], None)
         # 0x108 = TPM_RETURNCMD | TPM_RIGHTBUTTON
@@ -1247,109 +1598,92 @@ if __name__ == "__main__":
         _user32.DestroyMenu(hmenu)
 
     def _restore_from_bubble():
-        """Hide bubble and show main window."""
-        if _bubble_state.get("main_hwnd"):
-            _user32.ShowWindow(_bubble_state["main_hwnd"], 1)   # SW_NORMAL/SW_SHOW
-            _user32.SetForegroundWindow(_bubble_state["main_hwnd"])
-
-    def _load_logo_bitmap():
-        """Load the pre-cropped pony bitmap used inside the floating badge."""
-        try:
-            if not os.path.exists(bubble_pony_path):
-                log_msg("WARN", f"Bubble pony bitmap not found: {bubble_pony_path}")
-                return
-            IMAGE_BITMAP = 0
-            LR_LOADFROMFILE = 0x0010
-            hbitmap = _user32.LoadImageW(None, bubble_pony_path, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE)
-            if hbitmap:
-                _bubble_state["logo_hbitmap"] = hbitmap
-                log_msg("INFO", f"Bubble pony bitmap loaded: {bubble_pony_path}")
-            else:
-                log_msg("WARN", f"Could not load bubble pony bitmap, err={_kernel32.GetLastError()}")
-        except Exception as e:
-            log_msg("WARN", f"Could not load logo for bubble: {e}")
+        """Hide bubble and show main window, or launch it if not running."""
+        mhwnd = _bubble_state.get("main_hwnd")
+        if mhwnd and _user32.IsWindow(mhwnd):
+            _user32.ShowWindow(mhwnd, 5)   # SW_SHOW - restores window and taskbar icon
+            _user32.SetForegroundWindow(mhwnd)
+            # Hide the bubble
+            bwnd = _bubble_state.get("hwnd")
+            if bwnd:
+                _user32.ShowWindow(bwnd, 0)  # SW_HIDE
+                _bubble_state["visible"] = False
+        elif BUBBLE_ONLY:
+            # No main window yet (bubble-only startup): launch the main window
+            import subprocess
+            _script = os.path.abspath(__file__)
+            _cwd = str(HERMES_HOME / "desktop-client")
+            subprocess.Popen(
+                [sys.executable, _script],
+                cwd=_cwd,
+                creationflags=0x00000008 if sys.platform == "win32" else 0
+            )
+            # Destroy this bubble-only process's bubble so the keep-alive loop exits
+            bwnd = _bubble_state.get("hwnd")
+            if bwnd:
+                _user32.DestroyWindow(bwnd)
+                _bubble_state["hwnd"] = None
 
     def _create_floating_bubble():
         """Create the floating bubble widget window and run its message pump."""
-        from ctypes.wintypes import DWORD, HWND, HINSTANCE
-        _debug_log = []
-        _debug_file = str(HERMES_HOME / "desktop-client" / "bubble_init_debug.json")
-
         try:
-            wcname = "HermesFloatBubble"
+            # Use a unique class name to avoid conflicts with stale registrations
+            import random
+            wcname = f"HermesFloatBubble{random.randint(1000, 9999)}"
 
             # Register window class
             wndcls = WNDCLASSW()
             wndcls.lpfnWndProc = _ct.cast(_bubble_wndproc_fn, _ct.c_void_p)
             wndcls.hInstance = _kernel32.GetModuleHandleW(None)
             wndcls.lpszClassName = wcname
-            wndcls.hbrBackground = _gdi32.GetStockObject(5)  # HOLLOW_BRUSH (NULL_BRUSH=5)
+            wndcls.hbrBackground = _gdi32.GetStockObject(5)  # HOLLOW_BRUSH
             wndcls.hCursor = _user32.LoadCursorW(None, 32649)  # IDC_HAND
 
             reg_ok = _user32.RegisterClassW(_ct.byref(wndcls))
             reg_err = _kernel32.GetLastError()
-            _debug_log.append(f"RegisterClassW: ok={reg_ok} err={reg_err}")
 
             if not reg_ok and reg_err != 1410:  # Class already registered
                 log_msg("ERROR", f"Failed to register bubble class: {reg_err}")
-                _debug_log.append("ABORT: register failed")
-                with open(_debug_file, "w") as f:
-                    json.dump({"stage": "register_failed", "debug": _debug_log}, f, indent=2)
                 return
 
             # Get screen size for initial position (bottom-right area)
             screen_w = _user32.GetSystemMetrics(0)
             screen_h = _user32.GetSystemMetrics(1)
-            _debug_log.append(f"screen: {screen_w}x{screen_h}")
 
             hwnd = _user32.CreateWindowExW(
                 WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
                 wcname,
                 "Hermes",
-                WS_POPUP,  # Don't use WS_VISIBLE - we'll show it later via SetWindowPos
+                WS_POPUP,
                 screen_w - BUBBLE_SIZE - 40,
                 screen_h - BUBBLE_SIZE - 60,
                 BUBBLE_SIZE,
                 BUBBLE_SIZE,
                 None, None, wndcls.hInstance, None
             )
-            create_err = _kernel32.GetLastError()
-            _debug_log.append(f"CreateWindowExW: hwnd={hwnd} err={create_err}")
 
             if not hwnd:
                 log_msg("ERROR", "Could not create floating bubble")
-                _debug_log.append("ABORT: no hwnd")
-                with open(_debug_file, "w") as f:
-                    json.dump({"stage": "create_failed", "debug": _debug_log}, f, indent=2)
                 return
 
             _bubble_state["hwnd"] = hwnd
             _bubble_state["ready_event"].set()
 
             # Make it circular (clip region)
-            rgn = _create_round_region(BUBBLE_SIZE // 2, BUBBLE_SIZE // 2, BUBBLE_RADIUS)
-            rgn_ok = _user32.SetWindowRgn(hwnd, rgn, True)
-            _debug_log.append(f"SetWindowRgn: ok={rgn_ok} err={_kernel32.GetLastError()}")
+            rgn = _gdi32.CreateEllipticRgn(0, 0, BUBBLE_SIZE + 1, BUBBLE_SIZE + 1)
+            _user32.SetWindowRgn(hwnd, rgn, True)
 
             # Set layered window alpha/color key
-            lwa_ok = _user32.SetLayeredWindowAttributes(hwnd, COLOR_KEY, 230, LWA_ALPHA | LWA_COLORKEY)
-            _debug_log.append(f"SetLayeredWindowAttributes: ok={lwa_ok} err={_kernel32.GetLastError()}")
+            _user32.SetLayeredWindowAttributes(hwnd, COLOR_KEY, 255, LWA_ALPHA | LWA_COLORKEY)
 
-            # Load logo into bitmap
-            _load_logo_bitmap()
-            _debug_log.append(f"Logo loaded: bitmap={_bubble_state.get('logo_hbitmap') is not None}")
+            # Load PNG icon
+            bubble_png_path = str(STATIC_DIR / "bubble_icon.png")
+            _load_bubble_png(bubble_png_path)
 
             log_msg("INFO", f"Floating bubble created (hwnd={hwnd})")
-            _debug_log.append("SUCCESS")
-
-            with open(_debug_file, "w") as f:
-                json.dump({"stage": "created", "hwnd": str(hwnd), "debug": _debug_log}, f, indent=2)
 
         except Exception as e:
-            _debug_log.append(f"EXCEPTION: {e}")
             log_msg("ERROR", f"Bubble create exception: {e}")
-            with open(_debug_file, "w") as f:
-                json.dump({"stage": "exception", "error": str(e), "debug": _debug_log}, f, indent=2)
             _bubble_state["ready_event"].set()
             return
 
@@ -1358,38 +1692,15 @@ if __name__ == "__main__":
             _user32.TranslateMessage(_ct.byref(msg))
             _user32.DispatchMessageW(_ct.byref(msg))
 
-    # GDI+ startup structure
-    class _GDIPLUS_STARTUP_INPUT(_ct.Structure):
-        _fields_ = [
-            ("GdiplusVersion", _ct.c_uint),
-            ("DebugEventCallback", _ct.c_void_p),
-            ("SuppressBackgroundThread", _ct.c_bool),
-            ("SuppressExternalCodecs", _ct.c_bool),
-        ]
-
     # API endpoint to update bubble text/status
-    from fastapi import Request as _FastAPIRequest
     from pydantic import BaseModel as _BaseModel
     class _BubbleUpdate(_BaseModel):
         action: str = ""
         text: str = ""
     @app.post("/api/bubble/update")
     async def api_bubble_update(req: _BubbleUpdate):
-        log_msg("INFO", f"Bubble API called: action={req.action} text={req.text}")
         new_text = req.text
         action = req.action  # show, hide, restore, update
-
-        # Debug: write state to file
-        try:
-            _debug = {
-                "action": action, "text": new_text,
-                "hwnd": str(_bubble_state.get("hwnd")),
-                "main_hwnd": str(_bubble_state.get("main_hwnd")),
-                "visible": _bubble_state.get("visible"),
-            }
-            with open(str(HERMES_HOME / "desktop-client" / "bubble_debug.json"), "w") as f:
-                json.dump(_debug, f, indent=2)
-        except: pass
 
         if action == "show" or action == "":
             log_msg("INFO", f"Bubble show: visible={_bubble_state.get('visible')} hwnd={_bubble_state.get('hwnd')}")
@@ -1397,38 +1708,31 @@ if __name__ == "__main__":
                 bwnd = _bubble_state["hwnd"]
                 screen_w = _user32.GetSystemMetrics(0)
                 screen_h = _user32.GetSystemMetrics(1)
-                HWND_TOPMOST = -1
-                SWP_SHOWWINDOW = 0x0040
-                SWP_NOACTIVATE = 0x0010
-                # Re-apply round region (may have been lost)
-                rgn = _create_round_region(BUBBLE_SIZE // 2, BUBBLE_SIZE // 2, BUBBLE_RADIUS)
+                # Re-apply round region and layered attributes
+                rgn = _gdi32.CreateEllipticRgn(0, 0, BUBBLE_SIZE + 1, BUBBLE_SIZE + 1)
                 _user32.SetWindowRgn(bwnd, rgn, True)
-                # Re-apply layered attributes
                 _user32.SetLayeredWindowAttributes(bwnd, COLOR_KEY, 255, LWA_ALPHA | LWA_COLORKEY)
                 _user32.ShowWindow(bwnd, 5)  # SW_SHOW
-                # Show on top
-                pos_ok = _user32.SetWindowPos(
-                    bwnd, HWND_TOPMOST,
+                _user32.SetWindowPos(
+                    bwnd, -1,  # HWND_TOPMOST
                     screen_w - BUBBLE_SIZE - 40, screen_h - BUBBLE_SIZE - 60,
                     BUBBLE_SIZE, BUBBLE_SIZE,
-                    SWP_SHOWWINDOW | SWP_NOACTIVATE
+                    0x0040 | 0x0010  # SWP_SHOWWINDOW | SWP_NOACTIVATE
                 )
                 _user32.InvalidateRect(bwnd, None, True)
                 _user32.UpdateWindow(bwnd)
                 _bubble_state["visible"] = True
-                log_msg("INFO", f"Bubble shown via SetWindowPos ok={pos_ok} err={_kernel32.GetLastError()} pos=({screen_w - BUBBLE_SIZE - 40},{screen_h - BUBBLE_SIZE - 60})")
             else:
                 log_msg("WARN", "Bubble hwnd is None, cannot show")
-            # Also minimize main window via Win32
+            # Hide main window (and its taskbar icon) when bubble is shown
             if _bubble_state.get("main_hwnd"):
-                _user32.ShowWindow(_bubble_state["main_hwnd"], 6)  # SW_MINIMIZE=6
-                log_msg("INFO", "Main window minimized")
+                mhwnd = _bubble_state["main_hwnd"]
+                _user32.ShowWindow(mhwnd, 0)  # SW_HIDE - hides window AND removes taskbar icon
 
         if action == "hide":
             if _bubble_state.get("visible") and _bubble_state.get("hwnd"):
                 _user32.ShowWindow(_bubble_state["hwnd"], 0)
                 _bubble_state["visible"] = False
-                log_msg("INFO", "Bubble hidden")
 
         if action == "restore":
             _restore_from_bubble()
@@ -1438,20 +1742,8 @@ if __name__ == "__main__":
 
         if new_text:
             _bubble_state["text"] = new_text
-            # Repaint bubble
             if _bubble_state.get("hwnd"):
                 _user32.InvalidateRect(_bubble_state["hwnd"], None, True)
-
-        # Debug: write state AFTER processing
-        try:
-            _debug2 = {
-                "action": action, "text": new_text,
-                "hwnd": str(_bubble_state.get("hwnd")),
-                "visible": _bubble_state.get("visible"),
-            }
-            with open(str(HERMES_HOME / "desktop-client" / "bubble_debug_after.json"), "w") as f:
-                json.dump(_debug2, f, indent=2)
-        except: pass
 
         return {"ok": True}
 
@@ -1464,6 +1756,18 @@ if __name__ == "__main__":
         """Set icons after window is ready + create bubble widget."""
         hicon_small = _user32.LoadImageW(None, icon_path, 1, 48, 48, 0x10)
         hicon_big = _user32.LoadImageW(None, icon_path, 1, 256, 256, 0x10)
+
+        if BUBBLE_ONLY:
+            # Bubble-only mode: no main window, just create the floating bubble
+            log_msg("INFO", "Bubble-only mode: creating floating bubble...")
+            try:
+                bubble_thread = threading.Thread(target=_create_floating_bubble, daemon=True)
+                bubble_thread.start()
+                _bubble_state["ready_event"].wait(timeout=3.0)
+                log_msg("INFO", f"Bubble init done: hwnd={_bubble_state.get('hwnd')}")
+            except Exception as e:
+                log_msg("ERROR", f"Failed to create floating bubble: {e}")
+            return
 
         main_hwnd_val = None
 
@@ -1497,23 +1801,37 @@ if __name__ == "__main__":
                 bubble_thread.start()
                 _bubble_state["ready_event"].wait(timeout=3.0)
                 log_msg("INFO", f"Bubble init done: hwnd={_bubble_state.get('hwnd')}")
-                # Debug: write init state
-                try:
-                    _debug = {"stage": "init", "hwnd": str(_bubble_state.get("hwnd")), "main_hwnd": str(_bubble_state.get("main_hwnd"))}
-                    with open(str(HERMES_HOME / "desktop-client" / "bubble_debug.json"), "w") as f:
-                        json.dump(_debug, f, indent=2)
-                except: pass
             except Exception as e:
                 log_msg("ERROR", f"Failed to create floating bubble: {e}")
-                import traceback
-                log_msg("ERROR", traceback.format_exc())
-                try:
-                    with open(str(HERMES_HOME / "desktop-client" / "bubble_debug.json"), "w") as f:
-                        json.dump({"stage": "init_error", "error": str(e), "traceback": traceback.format_exc()}, f, indent=2)
-                except: pass
 
     threading.Thread(target=_win_thread, daemon=True).start()
 
-    webview.start()
-    log_msg("INFO", "Window closed, exiting...")
-    os._exit(0)
+    if BUBBLE_ONLY:
+        # Bubble-only mode: keep process alive as long as the bubble exists
+        log_msg("INFO", "Bubble-only mode active. Double-click bubble to open main window.")
+        while _bubble_state.get("hwnd") and _user32.IsWindow(_bubble_state["hwnd"]):
+            _time.sleep(1)
+        log_msg("INFO", "Bubble closed, exiting...")
+        os._exit(0)
+    else:
+        # Normal mode: open pywebview window
+        import webview
+        log_msg("INFO", "Opening native desktop window...")
+
+        window_args = {
+            "title": "Hermes Desktop",
+            "url": url,
+            "width": 1100,
+            "height": 750,
+            "min_size": (700, 500),
+            "resizable": True,
+            "background_color": "#faf3e8",
+        }
+        try:
+            window = webview.create_window(**window_args, icon=icon_path)
+        except TypeError:
+            window = webview.create_window(**window_args)
+
+        webview.start()
+        log_msg("INFO", "Window closed, exiting...")
+        os._exit(0)

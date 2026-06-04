@@ -51,7 +51,14 @@ logger = logging.getLogger(__name__)
 PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.5.0")
 
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
-_CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport
+# WINDOWS_PATCH: 在 Windows 上尝试不同的参数
+if sys.platform == "win32":
+    # 在 Windows 上，cua-driver 使用命名管道
+    # 我们可以通过环境变量配置连接方式
+    _CUA_DRIVER_ARGS = ["mcp"]  # 仍然尝试 mcp 命令
+else:
+    _CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport
+
 
 # Regex to parse list_windows text output lines:
 #   "- AppName (pid 12345) "Title" [window_id: 67890]"

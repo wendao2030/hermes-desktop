@@ -3,13 +3,39 @@
     "archived_at": null,
     "created_at": "2026-05-31T05:08:07.015373+00:00",
     "created_by": "agent",
-    "last_patched_at": "2026-05-31T07:51:48.600529+00:00",
-    "last_used_at": "2026-05-31T07:50:48.366457+00:00",
-    "last_viewed_at": "2026-05-31T07:50:48.305603+00:00",
-    "patch_count": 38,
+    "last_patched_at": "2026-06-02T16:03:08.947148+00:00",
+    "last_used_at": "2026-06-03T10:56:52.151415+00:00",
+    "last_viewed_at": "2026-06-03T10:56:52.147059+00:00",
+    "patch_count": 66,
     "pinned": false,
     "state": "active",
-    "use_count": 15,
-    "view_count": 15
+    "use_count": 26,
+    "view_count": 26
+  },
+  "qq-messaging": {
+    "archived_at": null,
+    "created_at": "2026-05-31T15:49:20.061416+00:00",
+    "created_by": null,
+    "last_patched_at": "2026-06-03T03:09:02.058987+00:00",
+    "last_used_at": "2026-06-04T07:56:46.282462+00:00",
+    "last_viewed_at": "2026-06-04T07:56:46.277434+00:00",
+    "patch_count": 7,
+    "pinned": false,
+    "state": "active",
+    "use_count": 7,
+    "view_count": 7
+  },
+  "wechat-messaging": {
+    "archived_at": null,
+    "created_at": "2026-06-02T14:38:42.830315+00:00",
+    "created_by": null,
+    "last_patched_at": "2026-06-02T16:02:31.322021+00:00",
+    "last_used_at": "2026-06-03T00:05:34.103075+00:00",
+    "last_viewed_at": "2026-06-03T00:05:34.097075+00:00",
+    "patch_count": 30,
+    "pinned": false,
+    "state": "active",
+    "use_count": 9,
+    "view_count": 9
   }
 }
