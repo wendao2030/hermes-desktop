@@ -439,8 +439,8 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                     <div>
                         <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
                         <!-- Save as task button only on the last agent message -->
-                        <div class="msg-actions" v-if="msg.role === 'agent' && !isThinking && idx === lastAgentMessageIdx">
-                            <button class="btn-save-task" @click="saveAsTask(idx)" title="把这次对话的流程保存为可执行的任务">📌 保存为任务</button>
+                        <div class="msg-actions" v-if="msg.role === 'agent' && !isThinking && idx === lastDisplayedAgentIdx">
+                            <button class="btn-save-task" @click="saveAsTask(msg._originalIdx)" title="把这次对话的流程保存为可执行的任务">📌 保存为任务</button>
                         </div>
                     </div>
                 </div>

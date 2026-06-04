@@ -142,18 +142,32 @@ const app = createApp({
         const displayedMessages = computed(() => {
             // Hide tool messages from main chat flow (they're technical details)
             // Show user, agent/assistant, system messages only
-            var msgs = messages.value.filter(m =>
-                m.role === 'user' || m.role === 'agent' ||
-                m.role === 'assistant' || m.role === 'agent-streaming' ||
-                m.role === 'system'
-            );
+            // Attach _originalIdx so we can map back to the raw messages array
+            var msgs = messages.value
+                .map((m, i) => Object.assign({}, m, { _originalIdx: i }))
+                .filter(m =>
+                    m.role === 'user' || m.role === 'agent' ||
+                    m.role === 'assistant' || m.role === 'agent-streaming' ||
+                    m.role === 'system'
+                );
             if (streamingText.value && isThinking.value) {
                 msgs.push({
                     role: 'agent-streaming',
                     html: renderMarkdown(streamingText.value),
+                    _originalIdx: -1,
                 });
             }
             return msgs;
+        });
+
+        const lastDisplayedAgentIdx = computed(() => {
+            for (let i = displayedMessages.value.length - 1; i >= 0; i--) {
+                const role = displayedMessages.value[i].role;
+                if (role === 'agent' || role === 'assistant') {
+                    return i;
+                }
+            }
+            return -1;
         });
 
         function formatDate(iso) {
@@ -970,6 +984,7 @@ const app = createApp({
             toolMessages,
             showToolDetails,
             lastAgentMessageIdx,
+            lastDisplayedAgentIdx,
             filteredCronJobs,
             isPinned,
             togglePin,
