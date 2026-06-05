@@ -1133,12 +1133,13 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             if "result" in result_holder:
                 result = result_holder["result"]
                 full_messages = result.get("messages", [])
+                log_msg("INFO", f"[{session_id[:12]}] full_messages count={len(full_messages)}, roles={[m.get('role') for m in full_messages]}")
                 if full_messages:
                     with session_lock:
                         session["history"] = full_messages
 
                 final_text = result.get("final_response", "")
-                log_msg("INFO", f"[{session_id[:12]}] Agent response complete, {len(final_text)} chars")
+                log_msg("INFO", f"[{session_id[:12]}] Agent response complete, {len(final_text)} chars, final_text[:100]={final_text[:100] if final_text else 'None'}")
                 if not final_text and full_messages:
                     last = full_messages[-1]
                     if last.get("role") == "assistant":
@@ -1154,6 +1155,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     for m in full_messages
                     if m.get("role") in ("user", "assistant")
                 ]
+                log_msg("INFO", f"[{session_id[:12]}] user_facing count={len(user_facing)}, sending done with {len(user_facing)} messages")
 
                 await websocket.send_json({
                     "type": "done",
