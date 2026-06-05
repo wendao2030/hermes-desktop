@@ -261,12 +261,21 @@ const app = createApp({
 
                 case 'tool': {
                     const name = data.name || '工具';
-                    const status = data.status || data.event || '';
+                    const event = data.event || '';
+                    const status = data.status || event;
                     const detail = data.detail ? ': ' + data.detail : '';
                     const toolMsg = `[Tool] ${name}: ${status}${detail}`;
                     const last = messages.value[messages.value.length - 1];
                     if (!last || last.role !== 'tool' || last.content !== escapeHtml(toolMsg)) {
                         addMessage('tool', toolMsg);
+                    }
+
+                    // When a tool call completes, save the current streaming text
+                    // as a standalone agent message so intermediate thinking steps
+                    // are preserved in the conversation.
+                    if (event === 'tool.complete' && streamingText.value.trim()) {
+                        addMessage('agent', streamingText.value);
+                        streamingText.value = '';
                     }
                     break;
                 }
@@ -281,27 +290,15 @@ const app = createApp({
                     break;
 
                 case 'done': {
-                    console.log('[DONE] messages count:', data.messages ? data.messages.length : 'undefined');
-                    if (data.messages) console.log('[DONE] roles:', data.messages.map(m => m.role).join(','));
-                    // Also log to server log panel for non-browser users
-                    addMessage('system', `[DONE] messages=${data.messages ? data.messages.length : 'none'}, roles=${data.messages ? data.messages.map(m => m.role).join(',') : 'none'}`);
                     const finalText = data.text || '';
                     const visibleText = streamingText.value || finalText;
 
-                    // If server sent full message list, rebuild messages from it
-                    // (preserves intermediate assistant steps during multi-step thinking)
-                    if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
-                        messages.value = data.messages.map(m => ({
-                            role: m.role === 'assistant' ? 'agent' : m.role,
-                            content: m.content || '',
-                            html: m.role === 'assistant' ? renderMarkdown(m.content || '') : escapeHtml(m.content || ''),
-                        }));
-                    } else {
-                        if (streamingText.value) {
-                            addMessage('agent', streamingText.value);
-                        } else if (finalText) {
-                            addMessage('agent', finalText);
-                        }
+                    // Flush any remaining streaming text as a final agent message
+                    if (streamingText.value.trim()) {
+                        addMessage('agent', streamingText.value);
+                    } else if (finalText && finalText !== '(no response)') {
+                        // Only add if we don't already have it from streaming
+                        addMessage('agent', finalText);
                     }
 
                     streamingText.value = '';
