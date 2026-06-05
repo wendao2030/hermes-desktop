@@ -283,11 +283,23 @@ const app = createApp({
                 case 'done': {
                     const finalText = data.text || '';
                     const visibleText = streamingText.value || finalText;
-                    if (streamingText.value) {
-                        addMessage('agent', streamingText.value);
-                    } else if (finalText) {
-                        addMessage('agent', finalText);
+
+                    // If server sent full message list, rebuild messages from it
+                    // (preserves intermediate assistant steps during multi-step thinking)
+                    if (data.messages && Array.isArray(data.messages)) {
+                        messages.value = data.messages.map(m => ({
+                            role: m.role === 'assistant' ? 'agent' : m.role,
+                            content: m.content || '',
+                            html: m.role === 'assistant' ? renderMarkdown(m.content || '') : escapeHtml(m.content || ''),
+                        }));
+                    } else {
+                        if (streamingText.value) {
+                            addMessage('agent', streamingText.value);
+                        } else if (finalText) {
+                            addMessage('agent', finalText);
+                        }
                     }
+
                     streamingText.value = '';
                     isThinking.value = false;
                     wsStatus.value = wsError.value ? wsStatus.value : '已连接';

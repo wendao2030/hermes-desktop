@@ -1146,9 +1146,19 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 if result.get("interrupted"):
                     await websocket.send_json({"type": "info", "text": "Interrupted"})
 
+                # Send the full conversation messages so the frontend can rebuild
+                # the complete message list (including intermediate assistant steps).
+                # Filter to only show user-facing messages (skip tool/system internals).
+                user_facing = [
+                    {"role": m.get("role"), "content": _message_text(m.get("content"))}
+                    for m in full_messages
+                    if m.get("role") in ("user", "assistant")
+                ]
+
                 await websocket.send_json({
                     "type": "done",
                     "text": final_text or "(no response)",
+                    "messages": user_facing,
                     "interrupted": bool(result.get("interrupted")),
                 })
                 try:
