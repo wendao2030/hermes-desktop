@@ -270,10 +270,9 @@ const app = createApp({
                         addMessage('tool', toolMsg);
                     }
 
-                    // When a tool call completes, save the current streaming text
-                    // as a standalone agent message so intermediate thinking steps
-                    // are preserved in the conversation.
-                    if (event === 'tool.complete' && streamingText.value.trim()) {
+                    // When a new tool call starts, the previous streaming text
+                    // represents a complete thinking step — save it as a message.
+                    if (event === 'tool.start' && streamingText.value.trim()) {
                         addMessage('agent', streamingText.value);
                         streamingText.value = '';
                     }
@@ -297,8 +296,15 @@ const app = createApp({
                     if (streamingText.value.trim()) {
                         addMessage('agent', streamingText.value);
                     } else if (finalText && finalText !== '(no response)') {
-                        // Only add if we don't already have it from streaming
-                        addMessage('agent', finalText);
+                        // Check if the last message is already this same text
+                        // (could have been saved by a prior tool.start)
+                        const lastMsg = messages.value[messages.value.length - 1];
+                        const isDuplicate = lastMsg &&
+                            (lastMsg.role === 'agent' || lastMsg.role === 'assistant') &&
+                            (lastMsg.content === finalText || lastMsg.content.trim() === finalText.trim());
+                        if (!isDuplicate) {
+                            addMessage('agent', finalText);
+                        }
                     }
 
                     streamingText.value = '';
