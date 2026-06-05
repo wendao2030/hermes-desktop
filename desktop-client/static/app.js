@@ -283,6 +283,8 @@ const app = createApp({
                 case 'done': {
                     console.log('[DONE] messages count:', data.messages ? data.messages.length : 'undefined');
                     if (data.messages) console.log('[DONE] roles:', data.messages.map(m => m.role).join(','));
+                    // Also log to server log panel for non-browser users
+                    addMessage('system', `[DONE] messages=${data.messages ? data.messages.length : 'none'}, roles=${data.messages ? data.messages.map(m => m.role).join(',') : 'none'}`);
                     const finalText = data.text || '';
                     const visibleText = streamingText.value || finalText;
 
