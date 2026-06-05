@@ -182,9 +182,16 @@ const app = createApp({
         }
 
         function scrollToBottom() {
+            // Use multiple ticks to ensure Vue has fully rendered the DOM
+            // before scrolling.  nextTick alone can fire before the browser
+            // has laid out the new content.
             nextTick(() => {
-                const el = chatArea.value;
-                if (el) el.scrollTop = el.scrollHeight;
+                nextTick(() => {
+                    const el = chatArea.value;
+                    if (el) {
+                        el.scrollTop = el.scrollHeight;
+                    }
+                });
             });
         }
 
