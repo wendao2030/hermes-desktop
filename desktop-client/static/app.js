@@ -897,21 +897,24 @@ const app = createApp({
                 });
 
                 // Restore previous scroll position for this session, or scroll to bottom on first load.
-                // Use a short delay in addition to nextTick to allow the browser to finish
-                // layout (important for long conversations with many markdown-rendered messages).
+                // The chatArea element is inside v-if="activeView === 'chat'", so we need to
+                // wait for the view switch + Vue render + browser layout before scrolling.
                 const savedPos = sessionScrollPos[sid];
+                const tryScroll = () => {
+                    const el = chatArea.value;
+                    if (!el || el.scrollHeight <= 0) {
+                        // DOM not ready yet — retry
+                        setTimeout(tryScroll, 50);
+                        return;
+                    }
+                    if (savedPos !== undefined) {
+                        el.scrollTop = savedPos;
+                    } else {
+                        el.scrollTop = el.scrollHeight;
+                    }
+                };
                 nextTick(() => {
-                    nextTick(() => {
-                        setTimeout(() => {
-                            const el = chatArea.value;
-                            if (!el) return;
-                            if (savedPos !== undefined) {
-                                el.scrollTop = savedPos;
-                            } else {
-                                el.scrollTop = el.scrollHeight;
-                            }
-                        }, 100);
-                    });
+                    setTimeout(tryScroll, 150);
                 });
             } catch (e) {
                 messages.value = [];
