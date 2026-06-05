@@ -896,17 +896,21 @@ const app = createApp({
                     };
                 });
 
-                // Restore previous scroll position for this session, or scroll to bottom on first load
+                // Restore previous scroll position for this session, or scroll to bottom on first load.
+                // Use a short delay in addition to nextTick to allow the browser to finish
+                // layout (important for long conversations with many markdown-rendered messages).
                 const savedPos = sessionScrollPos[sid];
                 nextTick(() => {
                     nextTick(() => {
-                        const el = chatArea.value;
-                        if (!el) return;
-                        if (savedPos !== undefined) {
-                            el.scrollTop = savedPos;
-                        } else {
-                            el.scrollTop = el.scrollHeight;
-                        }
+                        setTimeout(() => {
+                            const el = chatArea.value;
+                            if (!el) return;
+                            if (savedPos !== undefined) {
+                                el.scrollTop = savedPos;
+                            } else {
+                                el.scrollTop = el.scrollHeight;
+                            }
+                        }, 100);
                     });
                 });
             } catch (e) {
