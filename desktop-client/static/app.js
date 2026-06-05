@@ -281,12 +281,14 @@ const app = createApp({
                     break;
 
                 case 'done': {
+                    console.log('[DONE] messages count:', data.messages ? data.messages.length : 'undefined');
+                    if (data.messages) console.log('[DONE] roles:', data.messages.map(m => m.role).join(','));
                     const finalText = data.text || '';
                     const visibleText = streamingText.value || finalText;
 
                     // If server sent full message list, rebuild messages from it
                     // (preserves intermediate assistant steps during multi-step thinking)
-                    if (data.messages && Array.isArray(data.messages)) {
+                    if (data.messages && Array.isArray(data.messages) && data.messages.length > 0) {
                         messages.value = data.messages.map(m => ({
                             role: m.role === 'assistant' ? 'agent' : m.role,
                             content: m.content || '',
