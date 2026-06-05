@@ -1147,6 +1147,8 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     await websocket.send_json({"type": "info", "text": "Interrupted"})
 
                 await websocket.send_json({
+                    "type": "done",
+                    "text": final_text or "(no response)",
                     "interrupted": bool(result.get("interrupted")),
                 })
                 try:
