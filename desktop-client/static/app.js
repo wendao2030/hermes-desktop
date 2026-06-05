@@ -863,6 +863,11 @@ const app = createApp({
         function switchSession(sid) {
             if (sid === currentSessionId.value) return;
 
+            // Save current scroll position for the session we're leaving
+            if (currentSessionId.value && chatArea.value) {
+                sessionScrollPos[currentSessionId.value] = chatArea.value.scrollTop;
+            }
+
             currentSessionId.value = sid;
             streamingText.value = '';
             isThinking.value = false;
@@ -872,6 +877,9 @@ const app = createApp({
             const s = sessions.value.find(item => item.session_id === sid);
             currentTitle.value = s ? (s.title || '新对话') : '新对话';
         }
+
+        // Remember scroll position per session
+        const sessionScrollPos = {};
 
         async function loadSessionHistory(sid) {
             try {
@@ -887,7 +895,20 @@ const app = createApp({
                         html: role === 'agent' ? renderMarkdown(content) : escapeHtml(content),
                     };
                 });
-                scrollToBottom();
+
+                // Restore previous scroll position for this session, or scroll to bottom on first load
+                const savedPos = sessionScrollPos[sid];
+                nextTick(() => {
+                    nextTick(() => {
+                        const el = chatArea.value;
+                        if (!el) return;
+                        if (savedPos !== undefined) {
+                            el.scrollTop = savedPos;
+                        } else {
+                            el.scrollTop = el.scrollHeight;
+                        }
+                    });
+                });
             } catch (e) {
                 messages.value = [];
             }
