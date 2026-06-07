@@ -35,7 +35,7 @@ from hermes_state import SessionDB
 from utils import is_truthy_value, normalize_proxy_env_vars
 
 # --- FastAPI ---
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
@@ -73,6 +73,104 @@ def log_msg(level: str, msg: str):
         pass
 
 log_msg("INFO", "Server starting up...")
+
+# --- Employee system ---
+EMPLOYEES_DIR = HERMES_HOME / "employees"
+MAX_EMPLOYEES = 5
+
+def _employees_index_path() -> Path:
+    return EMPLOYEES_DIR / "index.json"
+
+def _load_employees_index() -> dict:
+    p = _employees_index_path()
+    if p.exists():
+        return json.loads(p.read_text(encoding="utf-8"))
+    return {"employees": []}
+
+def _save_employees_index(data: dict):
+    p = _employees_index_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _employee_dir(emp_id: str) -> Path:
+    return EMPLOYEES_DIR / emp_id
+
+def _employee_profile_path(emp_id: str) -> Path:
+    return _employee_dir(emp_id) / "profile.md"
+
+def _read_file_safe(path: Path) -> str:
+    try:
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    return ""
+
+def _build_profile_md(emp: dict) -> str:
+    """Build profile.md content from employee dict."""
+    lines = []
+    lines.append(f"# {emp.get('name', '未命名')}\n")
+    lines.append(f"## 基本信息")
+    lines.append(f"- 名称：{emp.get('name', '')}")
+    lines.append(f"- 头像：{emp.get('emoji', '🤖')}")
+    if emp.get("role"):
+        lines.append(f"- 角色：{emp.get('role', '')}（擅长领域/专家方向）")
+    lines.append(f"- 创建时间：{emp.get('created_at', '')}\n")
+    if emp.get("personality"):
+        lines.append(f"## 性格特征")
+        lines.append(f"- {emp.get('personality', '')}\n")
+    _wc = emp.get("work_content") or ""
+    _ws = emp.get("work_steps") or emp.get("steps") or ""
+    _sg = emp.get("self_growth") or emp.get("learn_topics") or ""
+    if emp.get("goal") or _wc or _ws or emp.get("notes"):
+        lines.append(f"## 工作设定")
+    if emp.get("goal"):
+        lines.append(f"- 目标：{emp.get('goal', '')}")
+    if _wc:
+        lines.append(f"- 工作内容：{_wc}")
+    if _ws:
+        lines.append(f"- 工作步骤：{_ws}")
+    if emp.get("notes"):
+        lines.append(f"- 注意事项：{emp.get('notes', '')}")
+    lines.append("")
+    if _sg:
+        lines.append(f"## 自我成长")
+        lines.append(f"- 学习方向：{_sg}\n")
+    if emp.get("work_mode"):
+        lines.append(f"## 工作模式")
+        lines.append(f"- {emp.get('work_mode', '混合模式')}")
+    return "\n".join(lines)
+
+def _find_employee_by_session(session_id: str) -> dict | None:
+    data = _load_employees_index()
+    for emp in data.get("employees", []):
+        if emp.get("session_id") == session_id:
+            return emp
+    return None
+
+def _build_agent_prompt(emp: dict) -> str | None:
+    profile_path = _employee_profile_path(emp["id"])
+    exp_path = _employee_dir(emp["id"]) / "experience.md"
+    kn_path = _employee_dir(emp["id"]) / "knowledge.md"
+    parts = []
+    if profile_path.exists():
+        parts.append(profile_path.read_text(encoding="utf-8"))
+    if exp_path.exists():
+        exp_text = exp_path.read_text(encoding="utf-8")
+        if exp_text.strip() and exp_text.strip() != "# 经验积累":
+            parts.append(exp_text)
+    if kn_path.exists():
+        kn_text = kn_path.read_text(encoding="utf-8")
+        if kn_text.strip() and kn_text.strip() != "# 知识库":
+            parts.append(kn_text)
+    if parts:
+        parts.append(
+            "\n【重要】以上是你的完整角色设定卡。你必须严格扮演这个角色，"
+            "回答时始终基于上述设定中的性格、角色和能力。"
+            "如果用户问你擅长什么或你是谁，请根据设定回答，不要编造与设定无关的内容。"
+        )
+        return "\n\n".join(parts)
+    return None
 
 # --- Session management ---
 sessions = {}  # {session_id: {"agent": AIAgent, "history": [], "created_at": datetime, "title": str}}
@@ -405,6 +503,241 @@ if STATIC_DIR.exists():
 async def api_logs():
     """Return recent server logs for the frontend."""
     return {"logs": server_logs[-200:]}
+
+# ========== Employee API ==========
+
+@app.get("/api/employees")
+async def list_employees():
+    try:
+        data = _load_employees_index()
+        employees = data.get("employees", [])
+        for emp in employees:
+            emp["max_slots"] = MAX_EMPLOYEES
+        return {"ok": True, "employees": employees, "max": MAX_EMPLOYEES}
+    except Exception as e:
+        log_msg("WARN", f"List employees failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees")
+async def create_employee(request: Request):
+    try:
+        body = await request.json()
+        name = (body.get("name") or "").strip()
+        if not name:
+            return {"ok": False, "error": "员工名称不能为空"}
+        data = _load_employees_index()
+        employees = data.get("employees", [])
+        if len(employees) >= MAX_EMPLOYEES:
+            return {"ok": False, "error": f"最多创建{MAX_EMPLOYEES}个员工"}
+        emp_id = "emp-" + uuid.uuid4().hex[:8]
+        emp = {
+            "id": emp_id,
+            "name": name,
+            "emoji": (body.get("emoji") or "😊").strip(),
+            "role": (body.get("role") or "").strip(),
+            "personality": (body.get("personality") or "").strip(),
+            "work_content": (body.get("work_content") or "").strip(),
+            "work_steps": (body.get("work_steps") or "").strip(),
+            "goal": (body.get("goal") or "").strip(),
+            "self_growth": (body.get("self_growth") or "").strip(),
+            "notes": (body.get("notes") or "").strip(),
+            "work_mode": (body.get("work_mode") or "manual").strip(),
+            "created_at": datetime.now().isoformat(),
+        }
+        employees.append(emp)
+        _save_employees_index(data)
+        profile_path = _employee_profile_path(emp_id)
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(_build_profile_md(emp), encoding="utf-8")
+        (_employee_dir(emp_id) / "experience.md").write_text("# 经验积累\n\n", encoding="utf-8")
+        (_employee_dir(emp_id) / "knowledge.md").write_text("# 知识库\n\n", encoding="utf-8")
+        (_employee_dir(emp_id) / "knowledge" / "source").mkdir(parents=True, exist_ok=True)
+        emp["session_id"] = emp_id
+        emp["max_slots"] = MAX_EMPLOYEES
+        return {"ok": True, "employee": emp}
+    except Exception as e:
+        log_msg("WARN", f"Create employee failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/employees/{employee_id}")
+async def get_employee(employee_id: str):
+    try:
+        data = _load_employees_index()
+        for emp in data.get("employees", []):
+            if emp["id"] == employee_id:
+                pp = _employee_profile_path(employee_id)
+                emp["profile_md"] = pp.read_text(encoding="utf-8") if pp.exists() else ""
+                emp["max_slots"] = MAX_EMPLOYEES
+                return {"ok": True, "employee": emp}
+        raise HTTPException(status_code=404, detail="Employee not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Get employee failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.put("/api/employees/{employee_id}")
+async def update_employee(employee_id: str, request: Request):
+    try:
+        body = await request.json()
+        data = _load_employees_index()
+        for emp in data.get("employees", []):
+            if emp["id"] == employee_id:
+                for key in ["name", "emoji", "role", "personality",
+                           "goal", "work_content", "work_steps", "self_growth",
+                           "notes", "work_mode", "session_id"]:
+                    if key in body:
+                        emp[key] = (body[key] or "").strip()
+                _save_employees_index(data)
+                _employee_profile_path(employee_id).write_text(
+                    _build_profile_md(emp), encoding="utf-8"
+                )
+                emp["max_slots"] = MAX_EMPLOYEES
+                return {"ok": True, "employee": emp}
+        raise HTTPException(status_code=404, detail="Employee not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Update employee failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.delete("/api/employees/{employee_id}")
+async def delete_employee(employee_id: str):
+    try:
+        data = _load_employees_index()
+        employees = data.get("employees", [])
+        data["employees"] = [e for e in employees if e["id"] != employee_id]
+        if len(data["employees"]) == len(employees):
+            raise HTTPException(status_code=404, detail="Employee not found")
+        _save_employees_index(data)
+        emp_dir = _employee_dir(employee_id)
+        if emp_dir.exists():
+            import shutil
+            shutil.rmtree(str(emp_dir))
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Delete employee failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees/{employee_id}/experience")
+async def append_employee_experience(employee_id: str, request: Request):
+    try:
+        body = await request.json()
+        exp_text = (body.get("experience") or "").strip()
+        if not exp_text:
+            return {"ok": False, "error": "经验内容为空"}
+        exp_path = _employee_dir(employee_id) / "experience.md"
+        current = _read_file_safe(exp_path)
+        new_exp = f"\n> {datetime.now().strftime('%Y-%m-%d %H:%M')}\n{exp_text}\n"
+        exp_path.parent.mkdir(parents=True, exist_ok=True)
+        exp_path.write_text(current + new_exp, encoding="utf-8")
+        return {"ok": True}
+    except Exception as e:
+        log_msg("WARN", f"Append experience failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees/{employee_id}/trigger")
+async def trigger_employee(employee_id: str, request: Request):
+    try:
+        body = await request.json()
+        message = body.get("message", "")
+        data = _load_employees_index()
+        emp = next((e for e in data.get("employees", []) if e["id"] == employee_id), None)
+        if not emp:
+            return {"ok": False, "error": "Employee not found"}
+        return {"ok": True, "employee_id": employee_id, "message": message,
+                "session_id": emp.get("session_id") or employee_id}
+    except Exception as e:
+        log_msg("WARN", f"Trigger employee failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees/{employee_id}/knowledge")
+async def upload_knowledge(employee_id: str, file: UploadFile = File(...)):
+    """Upload learning materials for an employee. Saved to knowledge/source/ folder."""
+    try:
+        data = _load_employees_index()
+        emp = next((e for e in data.get("employees", []) if e["id"] == employee_id), None)
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        source_dir = _employee_dir(employee_id) / "knowledge" / "source"
+        source_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = Path(file.filename).name
+        filepath = source_dir / safe_name
+        content = await file.read()
+        with open(filepath, "wb") as f:
+            f.write(content)
+        return {"ok": True, "filename": safe_name, "size": len(content)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Upload knowledge failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees/{employee_id}/learn")
+async def start_learning(employee_id: str, request: Request):
+    """Start a learning session: AI reads files in knowledge/source/ and distills into knowledge.md."""
+    try:
+        body = await request.json()
+        depth = (body.get("depth") or "deep").strip()
+        files_param = body.get("files") or []
+        data = _load_employees_index()
+        emp = next((e for e in data.get("employees", []) if e["id"] == employee_id), None)
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        source_dir = _employee_dir(employee_id) / "knowledge" / "source"
+        kn_path = _employee_dir(employee_id) / "knowledge.md"
+        if not source_dir.exists() or not any(source_dir.iterdir()):
+            return {"ok": False, "error": "没有可学习的文件，请先上传资料"}
+        # Build learning prompt
+        depth_map = {
+            "quick": "快速浏览（5%），只看标题和摘要",
+            "extract": "提取要点（20%），提取关键信息",
+            "deep": "深度学习（50%），理解核心概念和逻辑",
+            "full": "全面学习（100%），完整掌握所有细节",
+        }
+        depth_instruction = depth_map.get(depth, depth_map["deep"])
+        files_list = "\n".join(f"- {f.name}" for f in source_dir.iterdir() if f.is_file())
+        learning_prompt = (
+            f"你需要学习以下文件中的知识，学习深度：{depth_instruction}。\n\n"
+            f"可用文件：\n{files_list}\n\n"
+            f"请逐一阅读这些文件，提取关键知识，然后将学习成果整理写入 {kn_path} 文件。\n"
+            f"学习成果要结构化：包含核心概念、关键方法、重要结论。\n"
+            f"学习完成后，请在回复末尾用 📝 经验： 标记总结本次学习的关键收获。"
+        )
+        return {"ok": True, "employee_id": employee_id, "message": learning_prompt,
+                "session_id": emp.get("session_id") or employee_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Start learning failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees/{employee_id}/generate-workflow")
+async def generate_workflow(employee_id: str):
+    """Generate work steps (workflow) from employee profile using AI."""
+    try:
+        data = _load_employees_index()
+        emp = next((e for e in data.get("employees", []) if e["id"] == employee_id), None)
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        profile_md = _build_profile_md(emp)
+        prompt = (
+            "根据以下员工档案，生成详细的工作流程步骤。\n\n"
+            f"{profile_md}\n\n"
+            "请分析这个员工的角色、工作目标和内容，输出一个结构化的步骤列表。\n"
+            "每个步骤应该是具体可执行的，包含：步骤序号、步骤名称、具体操作描述。\n"
+            "输出格式：\n"
+            "1. 步骤名称：操作描述\n"
+            "2. 步骤名称：操作描述\n"
+            "..."
+        )
+        return {"ok": True, "employee_id": employee_id, "message": prompt,
+                "session_id": emp.get("session_id") or employee_id}
+    except Exception as e:
+        log_msg("WARN", f"Generate workflow failed: {e}")
+        return {"ok": False, "error": str(e)}
 
 @app.get("/api/config")
 async def api_config():
@@ -1043,12 +1376,25 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     log_msg("INFO", f"Creating agent for session {session_id[:12]}...")
                     _ensure_session_record(session_id)
                     s["agent"] = create_agent(session_id)
+                    # Inject employee system prompt if session_id matches an employee
+                    emp = _find_employee_by_session(session_id)
+                    if emp:
+                        sp = _build_agent_prompt(emp)
+                        if sp:
+                            s["agent"].ephemeral_system_prompt = sp
                     log_msg("INFO", f"Agent created for {session_id[:12]}")
                 except Exception as e:
                     log_msg("ERROR", f"Agent creation failed: {e}")
                     await websocket.send_json({"type": "error", "text": f"Failed to initialize agent: {e}"})
                     continue
             session = s
+
+            # Always refresh employee prompt (profile may have been edited)
+            emp = _find_employee_by_session(session_id)
+            if emp and session["agent"]:
+                sp = _build_agent_prompt(emp)
+                if sp:
+                    session["agent"].ephemeral_system_prompt = sp
 
             # Check for session switch
             if message.startswith("/switch "):

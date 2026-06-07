@@ -31,6 +31,7 @@ const app = createApp({
         const currentSessionId = ref('');
         const currentTitle = ref('');
         const sessions = ref([]);
+        const mainSessionId = ref(localStorage.getItem('hermes_main_session') || '');
         const messages = ref([]);
         const inputText = ref('');
         const isThinking = ref(false);
@@ -45,6 +46,7 @@ const app = createApp({
         const contextMenu = ref({ visible: false, x: 0, y: 0, sessionId: '' });
         const activeView = ref('home');
         const sessionListCollapsed = ref(false);
+        const appReady = ref(false);  // true only after onMounted init completes
         const rightClickMenu = ref({ visible: false, x: 0, y: 0, selected: '', full: '' });
 
         function showRightClickMenu(e, selected, full) {
@@ -77,6 +79,27 @@ const app = createApp({
         const taskFilter = ref('all');
         const showToolDetails = ref(false);
         const pinnedTaskIds = ref(JSON.parse(localStorage.getItem('hermes_pinned_tasks') || '[]'));
+        const employees = ref([]);
+        const activeEmployeeId = ref('');
+        const editingEmployee = ref({});
+        const currentEmployee = ref(null);
+        const isEmployeeChatting = ref(false);
+        const showNewEmployeeDialog = ref(false);
+        const showEditEmployeeDialog = ref(false);
+        const newEmployee = ref({ name: '', emoji: '😊', role: '', personality: '', goal: '', work_content: '', work_steps: '', self_growth: '', notes: '', work_mode: 'manual' });
+        const editEmployeeForm = ref({ name: '', emoji: '', role: '', personality: '', goal: '', work_content: '', work_steps: '', self_growth: '', notes: '', work_mode: 'manual' });
+        const editEmployeeFiles = ref([]);
+        const editLearnDepth = ref('deep');
+        const isLearning = ref(false);
+        const showWorkflowDialog = ref(false);
+        const workflowSteps = ref('');
+        const showWorkflowConfirm = ref(false);
+        const workflowSummary = ref('');
+        const empContextMenu = ref({ visible: false, x: 0, y: 0, emp: null });
+        const showEmojiPicker = ref(false);
+        const showEditEmojiPicker = ref(false);
+        const emojiOptions = ['😊','😎','🤓','🧑‍💼','👩‍💻','👨‍🏫','🧪','🎨','📊','🔧','🚀','💡','🌟','⭐','🐴','🦊','🐱','🐶','🐼','🦁','🐸','🦄','🌈','☀️','🌙','🍀','🌺','🎵','📚','💻','🎮','🎯','✨'];
+        // Employee chat reuses main session mechanism — isolation via session_id
 
         const pinnedTasks = computed(() => {
             return cronJobs.value.filter(j => pinnedTaskIds.value.includes(j.id));
@@ -198,16 +221,22 @@ const app = createApp({
         function addMessage(role, content) {
             if (role === 'system' || role === 'tool') {
                 messages.value.push({ role, content: escapeHtml(content) });
-                scrollToBottom();
-                return;
+            } else {
+                messages.value.push({ role, content, html: renderMarkdown(content) });
             }
-            messages.value.push({ role, content, html: renderMarkdown(content) });
+            // Keep cache in sync
+            if (currentSessionId.value) {
+                sessionMessagesCache[currentSessionId.value] = [...messages.value];
+            }
             scrollToBottom();
         }
 
         function connectWebSocket(sid) {
             activeWsSession = sid;
             if (ws) {
+                ws.onopen = null;
+                ws.onmessage = null;
+                ws.onerror = null;
                 ws.onclose = null;
                 ws.close();
                 ws = null;
@@ -238,6 +267,8 @@ const app = createApp({
             };
 
             ws.onmessage = (event) => {
+                // Ignore messages if we've switched to a different session
+                if (activeWsSession !== sid) return;
                 try {
                     handleWsMessage(JSON.parse(event.data));
                 } catch (e) {
@@ -259,12 +290,48 @@ const app = createApp({
             };
         }
 
+        // Strip thinking/reasoning blocks from streamed text.
+        // Per-delta approach: strip any complete <think>...</think> blocks
+        // (and similar tags).  Cross-delta fragments are handled by buffering
+        // only the portion that starts with a possible opening tag and lacks a
+        // closing tag — everything else is emitted immediately.
+        var _thinkBuf = '';
+        function _filterThink(text) {
+            if (!text) return '';
+            _thinkBuf += text;
+            // Strip complete think/reasoning blocks: <think>...</think>,
+            // <thinking>...</thinking>, <reasoning>...</reasoning>,
+            // <thought>...</thought>, <REASONING_SCRATCHPAD>...</REASONING_SCRATCHPAD>
+            var cleaned = _thinkBuf.replace(
+                /<(?:\/?)(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)(?: [^>]*)?>/gi,
+                ''
+            );
+            // If the buffer ends with a potential opening tag (starts with '<'),
+            // keep that trailing fragment for the next delta so it can be completed
+            // and stripped.  Otherwise, emit everything.
+            var lastLt = cleaned.lastIndexOf('<');
+            if (lastLt >= 0 && !cleaned.slice(lastLt).includes('>')) {
+                // Trailing '<...' without '>' — hold it back
+                var result = cleaned.slice(0, lastLt);
+                _thinkBuf = cleaned.slice(lastLt);
+                return result;
+            }
+            _thinkBuf = '';
+            return cleaned;
+        }
+
+        function _resetThinkFilter() {
+            _thinkBuf = '';
+        }
+
         function handleWsMessage(data) {
             switch (data.type) {
-                case 'delta':
-                    streamingText.value += data.text || '';
+                case 'delta': {
+                    var filtered = _filterThink(data.text || '');
+                    streamingText.value += filtered;
                     scrollToBottom();
                     break;
+                }
 
                 case 'tool': {
                     const name = data.name || '工具';
@@ -277,11 +344,13 @@ const app = createApp({
                         addMessage('tool', toolMsg);
                     }
 
-                    // When a new tool call starts, the previous streaming text
-                    // represents a complete thinking step — save it as a message.
-                    if (event === 'tool.start' && streamingText.value.trim()) {
-                        addMessage('agent', streamingText.value);
-                        streamingText.value = '';
+                    // When a new tool call starts, discard the thinking text (streamingText)
+                    // so it doesn't appear in the final output. Only the final result matters.
+                    if (event === 'tool.start') {
+                        if (streamingText.value.trim()) {
+                            streamingText.value = '';
+                        }
+                        _resetThinkFilter();
                     }
                     break;
                 }
@@ -289,36 +358,42 @@ const app = createApp({
                 case 'status':
                     if (data.text === 'thinking') {
                         isThinking.value = true;
-                        streamingText.value = '';
+                        // Only clear streamingText on first thinking signal, not mid-stream
+                        if (!streamingText.value) {
+                            streamingText.value = '';
+                        }
                     } else if (data.text === 'interrupting') {
                         wsStatus.value = '正在停止...';
                     }
                     break;
 
                 case 'done': {
-                    const finalText = data.text || '';
-                    const visibleText = streamingText.value || finalText;
+                    // Flush any remaining buffered think filter text
+                    _resetThinkFilter();
 
-                    // Flush any remaining streaming text as a final agent message
-                    if (streamingText.value.trim()) {
-                        addMessage('agent', streamingText.value);
-                    } else if (finalText && finalText !== '(no response)') {
-                        // Check if the last message is already this same text
-                        // (could have been saved by a prior tool.start)
-                        const lastMsg = messages.value[messages.value.length - 1];
-                        const isDuplicate = lastMsg &&
-                            (lastMsg.role === 'agent' || lastMsg.role === 'assistant') &&
-                            (lastMsg.content === finalText || lastMsg.content.trim() === finalText.trim());
-                        if (!isDuplicate) {
+                    const finalText = data.text || '';
+
+                    // Turn off thinking FIRST so the UI transitions out of
+                    // the thinking state before we add the final agent message.
+                    // This prevents a brief flash where the thinking bar
+                    // disappears and the message appears simultaneously.
+                    isThinking.value = false;
+
+                    // Use nextTick to ensure the thinking→idle transition
+                    // has rendered before we append the agent message.
+                    nextTick(function() {
+                        // Flush any remaining streaming text as the final agent message.
+                        if (streamingText.value.trim()) {
+                            addMessage('agent', streamingText.value);
+                        } else if (finalText && finalText !== '(no response)') {
                             addMessage('agent', finalText);
                         }
-                    }
+                        streamingText.value = '';
+                        scrollToBottom();
+                    });
 
-                    streamingText.value = '';
-                    isThinking.value = false;
                     wsStatus.value = wsError.value ? wsStatus.value : '已连接';
-                    scrollToBottom();
-                    updateBubbleText(visibleText.slice(0, 12));
+                    updateBubbleText(finalText.slice(0, 12));
                     loadSessions();
                     break;
                 }
@@ -328,6 +403,7 @@ const app = createApp({
                     break;
 
                 case 'error':
+                    _resetThinkFilter();
                     addMessage('system', '[ERROR] ' + data.text);
                     isThinking.value = false;
                     streamingText.value = '';
@@ -345,8 +421,8 @@ const app = createApp({
             const text = inputText.value.trim();
             if (!text || isThinking.value) return;
 
-            // If on home view, switch to chat first
-            if (activeView.value !== 'chat') {
+            // If on home view, switch to chat first (main conversation)
+            if (activeView.value === 'home') {
                 activeView.value = 'chat';
             }
 
@@ -354,6 +430,9 @@ const app = createApp({
                 addMessage('system', '[ERROR] 未连接到服务器');
                 return;
             }
+
+            // Reset think filter for new turn
+            _resetThinkFilter();
 
             addMessage('user', text);
 
@@ -486,10 +565,242 @@ const app = createApp({
             return installedSkills.value.some(s => s.name === name);
         }
 
-        function switchToHome() {
+        async function clearAllSessions() {
+            if (!confirm('确定要清除所有聊天记录吗？此操作不可恢复。')) return;
+            try {
+                for (const s of sessions.value) {
+                    await fetch('/api/session/' + s.session_id, { method: 'DELETE' });
+                }
+                sessions.value = [];
+                messages.value = [];
+                Object.keys(sessionMessagesCache).forEach(function(k) { delete sessionMessagesCache[k]; });
+                currentSessionId.value = '';
+                streamingText.value = '';
+                isThinking.value = false;
+                if (ws) { ws.close(); ws = null; }
+                await newSession();
+            } catch (e) {
+                alert('清除失败：' + (e.message || '网络错误'));
+            }
+        }
+
+        async function clearChatByRange(range) {
+            var label = '';
+            if (range === 'today') {
+                label = '今天';
+            } else if (range === 'week') {
+                label = '过去一周';
+            } else if (range === 'month') {
+                label = '过去一月';
+            }
+            if (!confirm('确定要清除「' + label + '」的聊天记录吗？此操作不可恢复。')) return;
+            try {
+                messages.value = [];
+                if (currentSessionId.value) {
+                    delete sessionMessagesCache[currentSessionId.value];
+                    await fetch('/api/session/' + currentSessionId.value, { method: 'DELETE' });
+                    sessions.value = [];
+                    currentSessionId.value = '';
+                    if (ws) { ws.close(); ws = null; }
+                    await newSession();
+                }
+                alert('已清除' + label + '的聊天记录');
+            } catch (e) {
+                alert('清除失败：' + (e.message || '网络错误'));
+            }
+        }
+
+        async function switchToHome() {
             activeView.value = 'home';
+            isEmployeeChatting.value = false;
+            currentEmployee.value = null;
+            // Restore main session messages if we were in an employee chat
+            if (mainSessionId.value && currentSessionId.value !== mainSessionId.value) {
+                await switchSession(mainSessionId.value);
+            }
             loadCronJobs();
             loadSessions();
+        }
+
+        async function loadEmployees() {
+            try {
+                const resp = await fetch('/api/employees');
+                const data = await resp.json();
+                if (data.ok) {
+                    employees.value = data.employees || [];
+                }
+            } catch (e) {
+                console.error('Load employees error:', e);
+            }
+        }
+
+        async function switchToTeam() {
+            activeView.value = 'team';
+            currentEmployee.value = null;
+            isEmployeeChatting.value = false;
+            // Don't switch session here - wait for user to pick an employee
+        }
+
+        async function chatWithEmployee(emp) {
+            isEmployeeChatting.value = true;
+            currentEmployee.value = emp;
+            editingEmployee.value = emp;
+
+            // Use or create session for this employee
+            var sid = emp.session_id;
+            if (!sid || sid === emp.id) {
+                // First time: create new independent session
+                const resp = await fetch('/api/session/new', { method: 'POST' });
+                const data = await resp.json();
+                sid = data.session_id;
+                // Persist session_id to employee
+                try {
+                    await fetch('/api/employees/' + encodeURIComponent(emp.id), {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ session_id: sid }),
+                    });
+                    emp.session_id = sid;
+                } catch (e) { /* non-fatal */ }
+                await loadSessions();
+            }
+
+            // Switch to employee's session (reuses main session mechanism)
+            activeView.value = 'team';
+            await switchSession(sid);
+        }
+
+        // sendToEmployee now delegates to main sendMessage since we reuse session mechanism
+        async function sendToEmployee() {
+            sendMessage();
+        }
+
+        function handleEmpKeydown(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendToEmployee();
+            }
+        }
+
+        function stopEmpResponse() {
+            stopCurrentResponse();
+        }
+
+        async function triggerCurrentEmployee() {
+            if (currentEmployee.value) {
+                await triggerEmployee(currentEmployee.value.id);
+            }
+        }
+
+        async function createEmployee() {
+            const name = newEmployee.value.name.trim();
+            if (!name) return;
+            try {
+                const resp = await fetch('/api/employees', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newEmployee.value),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    showNewEmployeeDialog.value = false;
+                    newEmployee.value = { name: '', emoji: '😊', role: '', personality: '', goal: '', work_content: '', work_steps: '', self_growth: '', notes: '', work_mode: 'manual' };
+                    await loadEmployees();
+                } else {
+                    alert('创建失败：' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('创建失败：' + (e.message || '网络错误'));
+            }
+        }
+
+        function startEditEmployee() {
+            const emp = editingEmployee.value;
+            editEmployeeForm.value = {
+                name: emp.name || '',
+                emoji: emp.emoji || '😊',
+                role: emp.role || '',
+                personality: emp.personality || '',
+                goal: emp.goal || '',
+                work_content: emp.work_content || '',
+                work_steps: emp.work_steps || '',
+                self_growth: emp.self_growth || '',
+                notes: emp.notes || '',
+                work_mode: emp.work_mode || 'manual',
+            };
+            showEditEmployeeDialog.value = true;
+        }
+
+        async function saveEmployee() {
+            try {
+                const empId = activeEmployeeId.value;
+                const resp = await fetch('/api/employees/' + encodeURIComponent(empId), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(editEmployeeForm.value),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    showEditEmployeeDialog.value = false;
+                    editingEmployee.value = data.employee || {};
+                    await loadEmployees();
+                } else {
+                    alert('保存失败：' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('保存失败：' + (e.message || '网络错误'));
+            }
+        }
+
+        async function deleteCurrentEmployee() {
+            const empId = activeEmployeeId.value;
+            if (!empId) return;
+            if (!confirm('确定要删除员工「' + (editingEmployee.value.name || empId) + '」吗？此操作不可撤销。')) return;
+            try {
+                const resp = await fetch('/api/employees/' + encodeURIComponent(empId), { method: 'DELETE' });
+                const data = await resp.json();
+                if (data.ok) {
+                    activeView.value = 'home';
+                    activeEmployeeId.value = '';
+                    editingEmployee.value = {};
+                    await loadEmployees();
+                } else {
+                    alert('删除失败：' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('删除失败：' + (e.message || '网络错误'));
+            }
+        }
+
+        async function triggerEmployee(empId) {
+            try {
+                const resp = await fetch('/api/employees/' + encodeURIComponent(empId) + '/trigger', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: '开始执行工作任务' }),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    // Switch to chat view with this employee's session
+                    const sid = data.session_id || empId;
+                    activeView.value = 'chat';
+                    // Check if we need a new session for this employee
+                    const existing = sessions.value.find(s => s.session_id === sid);
+                    if (existing) {
+                        switchSession(sid);
+                    } else {
+                        // Create session first
+                        const resp2 = await fetch('/api/session/new', { method: 'POST' });
+                        const data2 = await resp2.json();
+                        await loadSessions();
+                        switchSession(data2.session_id);
+                    }
+                } else {
+                    alert('触发失败：' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('触发失败：' + (e.message || '网络错误'));
+            }
         }
 
         function toggleSessionList() {
@@ -574,6 +885,218 @@ const app = createApp({
                 }
             } catch (e) {
                 console.error('Delete job error:', e);
+            }
+        }
+
+        // ===== Learning functions =====
+        function triggerEditFileUpload() {
+            var el = document.querySelector('input[ref="editLearnFileInput"]');
+            if (el) el.click();
+        }
+
+        function uploadEditEmployeeFile(event) {
+            var files = event.target.files;
+            if (!files.length) return;
+            for (var i = 0; i < files.length; i++) {
+                var f = files[i];
+                if (!editEmployeeFiles.value.find(function(existing) { return existing.name === f.name; })) {
+                    editEmployeeFiles.value.push({ name: f.name, file: f });
+                }
+            }
+            event.target.value = '';
+        }
+
+        function removeEditEmployeeFile(name) {
+            editEmployeeFiles.value = editEmployeeFiles.value.filter(function(f) { return f.name !== name; });
+        }
+
+        function getDepthLabel(depth) {
+            var map = { quick: '快速浏览', extract: '提取要点', deep: '深度学习', full: '全面学习' };
+            return map[depth] || '深度学习';
+        }
+
+        async function startLearningNow() {
+            if (!activeEmployeeId.value || editEmployeeFiles.value.length === 0) return;
+            isLearning.value = true;
+            try {
+                // Upload files first
+                var uploadResults = [];
+                for (var i = 0; i < editEmployeeFiles.value.length; i++) {
+                    var f = editEmployeeFiles.value[i];
+                    var formData = new FormData();
+                    formData.append('file', f.file);
+                    var resp = await fetch('/api/employees/' + encodeURIComponent(activeEmployeeId.value) + '/knowledge', {
+                        method: 'POST',
+                        body: formData,
+                    });
+                    var data = await resp.json();
+                    if (data.ok) uploadResults.push(data.filename);
+                }
+                // Start learning
+                var learnResp = await fetch('/api/employees/' + encodeURIComponent(activeEmployeeId.value) + '/learn', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ depth: editLearnDepth.value, files: uploadResults }),
+                });
+                var learnData = await learnResp.json();
+                if (learnData.ok) {
+                    showEditEmployeeDialog.value = false;
+                    editEmployeeFiles.value = [];
+                    // Send learning message to employee session
+                    var sid = learnData.session_id || activeEmployeeId.value;
+                    var existing = sessions.value.find(function(s) { return s.session_id === sid; });
+                    if (existing) {
+                        switchSession(sid);
+                    } else {
+                        var newResp = await fetch('/api/session/new', { method: 'POST' });
+                        var newData = await newResp.json();
+                        await loadSessions();
+                        switchSession(newData.session_id);
+                    }
+                    activeView.value = 'chat';
+                    await new Promise(function(r) { setTimeout(r, 500); });
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        addMessage('user', learnData.message);
+                        isThinking.value = true;
+                        streamingText.value = '';
+                        ws.send(JSON.stringify({ message: learnData.message }));
+                        scrollToBottom();
+                    }
+                } else {
+                    alert('启动学习失败：' + (learnData.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('学习失败：' + (e.message || '网络错误'));
+            }
+            isLearning.value = false;
+        }
+
+        // ===== Workflow functions =====
+        function openWorkflowDesigner(emp) {
+            workflowSteps.value = emp.work_steps || '';
+            showWorkflowDialog.value = true;
+        }
+
+        function closeWorkflowDialog() {
+            showWorkflowDialog.value = false;
+        }
+
+        async function generateWorkflowWithAI() {
+            if (!activeEmployeeId.value) return;
+            try {
+                var resp = await fetch('/api/employees/' + encodeURIComponent(activeEmployeeId.value) + '/generate-workflow', { method: 'POST' });
+                var data = await resp.json();
+                if (data.ok) {
+                    // Send to chat to let AI generate
+                    showWorkflowDialog.value = false;
+                    var sid = data.session_id || activeEmployeeId.value;
+                    var existing = sessions.value.find(function(s) { return s.session_id === sid; });
+                    if (existing) {
+                        switchSession(sid);
+                    } else {
+                        var newResp = await fetch('/api/session/new', { method: 'POST' });
+                        var newData = await newResp.json();
+                        await loadSessions();
+                        switchSession(newData.session_id);
+                    }
+                    activeView.value = 'chat';
+                    await new Promise(function(r) { setTimeout(r, 500); });
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        addMessage('user', data.message);
+                        isThinking.value = true;
+                        streamingText.value = '';
+                        ws.send(JSON.stringify({ message: data.message }));
+                        scrollToBottom();
+                    }
+                } else {
+                    alert('生成失败：' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('生成失败：' + (e.message || '网络错误'));
+            }
+        }
+
+        async function saveWorkflowSettings() {
+            try {
+                var resp = await fetch('/api/employees/' + encodeURIComponent(activeEmployeeId.value), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ work_steps: workflowSteps.value }),
+                });
+                var data = await resp.json();
+                if (data.ok) {
+                    showWorkflowDialog.value = false;
+                    if (editingEmployee.value && editingEmployee.value.id === activeEmployeeId.value) {
+                        editingEmployee.value.work_steps = workflowSteps.value;
+                    }
+                    if (currentEmployee.value && currentEmployee.value.id === activeEmployeeId.value) {
+                        currentEmployee.value.work_steps = workflowSteps.value;
+                    }
+                    await loadEmployees();
+                } else {
+                    alert('保存失败：' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('保存失败：' + (e.message || '网络错误'));
+            }
+        }
+
+        // ===== Trigger with confirmation =====
+        async function triggerEmployeeWithConfirm() {
+            if (!currentEmployee.value) return;
+            var emp = currentEmployee.value;
+            var wc = emp.work_content || '';
+            var ws = emp.work_steps || '';
+            if (wc || ws) {
+                workflowSummary.value = '**工作内容：** ' + (wc || '未设定') + '\n\n**工作步骤：** ' + (ws || '未设定');
+                showWorkflowConfirm.value = true;
+            } else {
+                await triggerCurrentEmployee();
+            }
+        }
+
+        function confirmTrigger() {
+            showWorkflowConfirm.value = false;
+            triggerCurrentEmployee();
+        }
+
+        function cancelTrigger() {
+            showWorkflowConfirm.value = false;
+        }
+
+        // ===== Employee context menu =====
+        function showEmpContextMenu(e, emp) {
+            empContextMenu.value = { visible: true, x: e.clientX, y: e.clientY, emp: emp };
+        }
+
+        function hideEmpContextMenu() {
+            empContextMenu.value = { visible: false, x: 0, y: 0, emp: null };
+        }
+
+        function openEditEmployeeDialog(emp) {
+            hideEmpContextMenu();
+            activeEmployeeId.value = emp.id;
+            editingEmployee.value = emp;
+            editEmployeeFiles.value = [];
+            startEditEmployee();
+        }
+
+        async function deleteEmployeeFromMenu(emp) {
+            hideEmpContextMenu();
+            if (!confirm('确定要删除员工「' + (emp.name || emp.id) + '」吗？此操作不可撤销。')) return;
+            try {
+                var resp = await fetch('/api/employees/' + encodeURIComponent(emp.id), { method: 'DELETE' });
+                var data = await resp.json();
+                if (data.ok) {
+                    if (currentEmployee.value && currentEmployee.value.id === emp.id) {
+                        currentEmployee.value = null;
+                    }
+                    await loadEmployees();
+                } else {
+                    alert('删除失败：' + (data.error || '未知错误'));
+                }
+            } catch (e) {
+                alert('删除失败：' + (e.message || '网络错误'));
             }
         }
 
@@ -833,6 +1356,7 @@ const app = createApp({
                     isThinking.value = false;
                     currentSessionId.value = '';
                     messages.value = [];
+                    delete sessionMessagesCache[sid];
                     if (ws) {
                         ws.close();
                         ws = null;
@@ -853,6 +1377,8 @@ const app = createApp({
             try {
                 const resp = await fetch('/api/session/new', { method: 'POST' });
                 const data = await resp.json();
+                mainSessionId.value = data.session_id;
+                localStorage.setItem('hermes_main_session', data.session_id);
                 await loadSessions();
                 switchSession(data.session_id);
             } catch (e) {
@@ -860,10 +1386,23 @@ const app = createApp({
             }
         }
 
-        function switchSession(sid) {
+        async function goToMainChat() {
+            isEmployeeChatting.value = false;
+            currentEmployee.value = null;
+            activeView.value = 'chat';
+            // Ensure we have a valid main session
+            if (!mainSessionId.value) {
+                await newSession();
+            } else if (currentSessionId.value !== mainSessionId.value) {
+                switchSession(mainSessionId.value);
+            }
+        }
+
+        async function switchSession(sid) {
             if (sid === currentSessionId.value) return;
 
-            // Save current scroll position for the session we're leaving
+            // Save current messages and scroll position for the session we're leaving
+            saveCurrentMessages();
             if (currentSessionId.value && chatArea.value) {
                 sessionScrollPos[currentSessionId.value] = chatArea.value.scrollTop;
             }
@@ -871,7 +1410,7 @@ const app = createApp({
             currentSessionId.value = sid;
             streamingText.value = '';
             isThinking.value = false;
-            loadSessionHistory(sid);
+            await loadSessionHistory(sid);
             connectWebSocket(sid);
 
             const s = sessions.value.find(item => item.session_id === sid);
@@ -880,8 +1419,22 @@ const app = createApp({
 
         // Remember scroll position per session
         const sessionScrollPos = {};
+        // Remember messages per session — critical for isolation!
+        const sessionMessagesCache = {};
+
+        function saveCurrentMessages() {
+            if (currentSessionId.value) {
+                sessionMessagesCache[currentSessionId.value] = [...messages.value];
+            }
+        }
 
         async function loadSessionHistory(sid) {
+            // Check cache first
+            if (sessionMessagesCache[sid]) {
+                messages.value = [...sessionMessagesCache[sid]];
+                scrollToBottom();
+                return;
+            }
             try {
                 const resp = await fetch('/api/session/' + sid + '/history');
                 if (!resp.ok) throw new Error('Not found');
@@ -895,6 +1448,8 @@ const app = createApp({
                         html: role === 'agent' ? renderMarkdown(content) : escapeHtml(content),
                     };
                 });
+                // Cache the loaded messages
+                sessionMessagesCache[sid] = [...messages.value];
 
                 // Restore previous scroll position for this session, or scroll to bottom on first load.
                 // The chatArea element is inside v-if="activeView === 'chat'", so we need to
@@ -918,6 +1473,7 @@ const app = createApp({
                 });
             } catch (e) {
                 messages.value = [];
+                sessionMessagesCache[sid] = [];
             }
         }
 
@@ -942,47 +1498,75 @@ const app = createApp({
         }
 
         onMounted(async function() {
-            document.addEventListener('click', hideContextMenu);
-            document.addEventListener('click', hideRightClickMenu);
-            // Right-click on message bubbles: show custom copy menu
-            document.addEventListener('contextmenu', function(e) {
-                var target = e.target;
-                var isMsg = false;
-                while (target && target !== document.body) {
-                    if (target.classList && (target.classList.contains('message') ||
-                        target.classList.contains('msg-actions') ||
-                        target.tagName === 'PRE' ||
-                        target.tagName === 'CODE')) {
-                        isMsg = true;
-                        break;
+            try {
+                document.addEventListener('click', hideContextMenu);
+                document.addEventListener('click', hideRightClickMenu);
+                // Right-click on message bubbles: show custom copy menu
+                document.addEventListener('contextmenu', function(e) {
+                    var target = e.target;
+                    var isMsg = false;
+                    while (target && target !== document.body) {
+                        if (target.classList && (target.classList.contains('message') ||
+                            target.classList.contains('msg-actions') ||
+                            target.tagName === 'PRE' ||
+                            target.tagName === 'CODE')) {
+                            isMsg = true;
+                            break;
+                        }
+                        target = target.parentElement;
                     }
-                    target = target.parentElement;
-                }
-                if (isMsg) {
-                    e.preventDefault();
-                    e.stopImmediatePropagation();
-                    var sel = window.getSelection();
-                    var selectedText = sel ? sel.toString().trim() : '';
-                    // Find the closest message element for full-text fallback
-                    var msgEl = e.target.closest('.message');
-                    var fullText = msgEl ? msgEl.innerText.trim() : '';
-                    showRightClickMenu(e, selectedText, fullText);
-                }
-            }, true);
-            await loadConfig();
-            await loadSessions();
-            await loadCronJobs();
+                    if (isMsg) {
+                        e.preventDefault();
+                        e.stopImmediatePropagation();
+                        var sel = window.getSelection();
+                        var selectedText = sel ? sel.toString().trim() : '';
+                        // Find the closest message element for full-text fallback
+                        var msgEl = e.target.closest('.message');
+                        var fullText = msgEl ? msgEl.innerText.trim() : '';
+                        showRightClickMenu(e, selectedText, fullText);
+                    }
+                }, true);
+                await loadConfig();
+                await loadSessions();
+                await loadCronJobs();
+                await loadEmployees();
 
-            if (sessions.value.length > 0) {
-                switchSession(sessions.value[0].session_id);
-            } else {
-                await newSession();
+                // Initialize main session in background but stay on home view
+                // Main session is identified by mainSessionId in localStorage.
+                // It is NEVER derived from the session list — we don't "pick" one.
+                // When mainSessionId is empty or the stored session no longer exists,
+                // we create a brand new session via /api/session/new.
+                const storedMainId = mainSessionId.value;
+                const storedSessionExists = storedMainId &&
+                    sessions.value.some(s => s.session_id === storedMainId);
+
+                if (!storedMainId || !storedSessionExists) {
+                    // No valid main session: create a new one
+                    const resp = await fetch('/api/session/new', { method: 'POST' });
+                    const data = await resp.json();
+                    mainSessionId.value = data.session_id;
+                    localStorage.setItem('hermes_main_session', data.session_id);
+                    currentSessionId.value = data.session_id;
+                    await loadSessions();
+                    loadSessionHistory(data.session_id);
+                    connectWebSocket(data.session_id);
+                } else {
+                    // Restore existing main session
+                    currentSessionId.value = mainSessionId.value;
+                    loadSessionHistory(mainSessionId.value);
+                    connectWebSocket(mainSessionId.value);
+                }
+
+                nextTick(function() {
+                    if (inputEl.value) inputEl.value.focus();
+                });
+                startLogPolling();
+            } catch (e) {
+                console.error('Init error:', e);
+            } finally {
+                // Always reveal the UI — even if some loads failed
+                appReady.value = true;
             }
-
-            nextTick(function() {
-                if (inputEl.value) inputEl.value.focus();
-            });
-            startLogPolling();
         });
 
         onBeforeUnmount(function() {
@@ -993,6 +1577,7 @@ const app = createApp({
         });
 
         return {
+            appReady,
             currentSessionId,
             currentTitle,
             sessions,
@@ -1043,6 +1628,7 @@ const app = createApp({
             isPinned,
             togglePin,
             switchToHome,
+            goToMainChat,
             switchToSkills,
             loadInstalledSkills,
             isSkillInstalled,
@@ -1075,8 +1661,64 @@ const app = createApp({
             newSession,
             switchSession,
             minimizeToBubble,
+            clearAllSessions,
+            clearChatByRange,
+            showEmojiPicker,
+            showEditEmojiPicker,
+            emojiOptions,
+            employees,
+            activeEmployeeId,
+            editingEmployee,
+            currentEmployee,
+            isEmployeeChatting,
+            showNewEmployeeDialog,
+            showEditEmployeeDialog,
+            newEmployee,
+            editEmployeeForm,
+            editEmployeeFiles,
+            editLearnDepth,
+            isLearning,
+            showWorkflowDialog,
+            workflowSteps,
+            showWorkflowConfirm,
+            workflowSummary,
+            empContextMenu,
+            loadEmployees,
+            switchToTeam,
+            chatWithEmployee,
+            sendToEmployee,
+            handleEmpKeydown,
+            stopEmpResponse,
+            triggerCurrentEmployee,
+            createEmployee,
+            startEditEmployee,
+            saveEmployee,
+            deleteCurrentEmployee,
+            triggerEmployee,
+            triggerEditFileUpload,
+            uploadEditEmployeeFile,
+            removeEditEmployeeFile,
+            getDepthLabel,
+            startLearningNow,
+            openWorkflowDesigner,
+            closeWorkflowDialog,
+            generateWorkflowWithAI,
+            saveWorkflowSettings,
+            triggerEmployeeWithConfirm,
+            confirmTrigger,
+            cancelTrigger,
+            showEmpContextMenu,
+            hideEmpContextMenu,
+            openEditEmployeeDialog,
+            deleteEmployeeFromMenu,
         };
     },
 });
+
+// Global error handler: prevent Vue rendering errors from blanking the page
+app.config.errorHandler = function(err, instance, info) {
+    console.error('[Vue Error]', err, info);
+    // Don't let the error propagate and blank the app
+};
 
 app.mount('#app');

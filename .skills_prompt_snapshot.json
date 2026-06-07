@@ -314,8 +314,12 @@
       7910
     ],
     "software-development\\desktop-automation-platforms\\SKILL.md": [
-      1780416188934740700,
-      53870
+      1780587676980683900,
+      54435
+    ],
+    "software-development\\educational-assessment-workflows\\SKILL.md": [
+      1780625340051287600,
+      13742
     ],
     "software-development\\hermes-agent-skill-authoring\\SKILL.md": [
       1779724140000000000,
@@ -338,8 +342,8 @@
       13172
     ],
     "software-development\\qq-messaging\\SKILL.md": [
-      1780456142042329800,
-      8149
+      1780797039357725300,
+      9049
     ],
     "software-development\\requesting-code-review\\SKILL.md": [
       1779724140000000000,
@@ -362,8 +366,8 @@
       9573
     ],
     "software-development\\wechat-messaging\\SKILL.md": [
-      1780416151311710000,
-      30741
+      1780797024018687800,
+      31564
     ],
     "software-development\\writing-plans\\SKILL.md": [
       1779724140000000000,
@@ -1790,6 +1794,23 @@
       "category": "software-development",
       "frontmatter_name": "desktop-automation-platforms",
       "description": "Platform-specific capabilities, limitations, and configur...",
+      "platforms": [
+        "linux",
+        "macos",
+        "windows"
+      ],
+      "conditions": {
+        "fallback_for_toolsets": [],
+        "requires_toolsets": [],
+        "fallback_for_tools": [],
+        "requires_tools": []
+      }
+    },
+    {
+      "skill_name": "educational-assessment-workflows",
+      "category": "software-development",
+      "frontmatter_name": "educational-assessment-workflows",
+      "description": "Batch grading and assessment workflows for educational as...",
       "platforms": [
         "linux",
         "macos",

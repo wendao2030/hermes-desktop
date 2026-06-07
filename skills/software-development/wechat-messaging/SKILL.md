@@ -63,6 +63,16 @@ trigger: 当用户需要给微信好友或群聊发送消息时使用此技能
    - **验证方法**：用户明确表示此快捷键有效，应优先使用
 
 **执行步骤：**
+
+0. **建立 cua-driver 会话（必须！）**：
+   - cua-driver 在每个新会话的第一次 key/type 操作前**必须**先调用一次 `capture`，否则会返回错误：`"No active window — call capture() first."`
+   - 即使你不需要看截图内容，也要先调用一次：
+     ```python
+     computer_use(action='capture', mode='ax', max_elements=5)
+     ```
+   - 之后所有 `key`/`type` 操作才能正常工作
+   - **不要跳过此步**：哪怕已经知道要按什么快捷键，第一次操作前也必须 capture 一次
+
 1. **启动微信**（如果未运行）：
    - `computer_use(action='capture', mode='som')` - 捕获屏幕
    - 在返回结果中查找包含"微信"的列表项（通常是元素#2）
@@ -592,7 +602,7 @@ print("已重新尝试发送消息，请再次检查是否收到。")
 ### 参考文档
 
 #### 调试记录
-- `references/windows-wechat-debug-2026-06-02.md` - 详细的Windows微信自动化调试记录，包含cua-driver限制、替代方案和实际测试结果
+- `references/skill-discipline-requirements-2026-06-04.md` - **重要纪律要求**：用户关于"必须优先使用现有技能"的关键反馈，技能使用纪律要求，避免凭记忆操作导致重复错误
 - `references/wechat-shortcut-validation-2026-06-02.md` - **重要**：用户确认`Ctrl+Alt+W`快捷键有效性的记录，包含用户期望分析和操作验证策略
 - `references/model-vision-support-limitations-2026-06-02.md` - **关键发现**：模型图像输入支持限制对桌面自动化的影响，包含用户验证要求和替代策略
 - `references/wechat-uia-limitations-2026-06-02.md` - **核心技术发现**：微信没有实现完整UIA树的详细分析，包含与QQ的对比和技术解决方案
@@ -696,7 +706,8 @@ computer_use(action='capture', app='Weixin.exe', mode='ax', max_elements=200)
    - 记录哪种方法在当前环境有效
 
 ### 3. 不要做的（基于错误经验）
-1. **不要使用**：`computer_use(action='focus_app', app='Weixin.exe')` - 进程名错误
+1. **不要跳过第一次 capture**：cua-driver 在新会话里第一次执行 `key`/`type` 前必须先 `capture` 一次建立活动窗口，否则会报 `"No active window — call capture() first."`
+2. **不要使用**：`computer_use(action='focus_app', app='Weixin.exe')` - 进程名错误
 2. **不要假设**：`ok: true`等于操作成功 - 需要用户验证
 3. **不要跳过**：用户反馈环节 - 这是最终验证标准
 4. **不要硬编码**：元素索引或进程名 - 环境可能变化

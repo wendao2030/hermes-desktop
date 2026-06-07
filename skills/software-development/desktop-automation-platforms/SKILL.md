@@ -485,6 +485,7 @@ cua-driver list_windows | grep -i notepad
 - `references/qq-multi-contact-automation-success-2026-05-31.md` - Complete verification of QQ automation for multiple contacts with user preference analysis and workflow corrections (May 31, 2026)
 - `references/qq-automation-workflow-corrections-2026-05-31.md` - Critical workflow corrections for QQ automation: search auto-enters chat, no ESC key, direct tool usage preference (May 31, 2026)
 - `references/user-verification-requirements-2026-06-02.md` - **重要**：用户对桌面自动化的验证要求，基于实际界面操作而非推断，包含实时测试偏好和一致性期望
+- `references/skill-discipline-requirements-2026-06-04.md` - **重要纪律要求**：用户关于"必须优先使用现有技能"的关键反馈，技能使用纪律要求，避免凭记忆操作导致重复错误
 
 ## User Preferences and Communication Style
 
@@ -504,6 +505,8 @@ cua-driver list_windows | grep -i notepad
 6. **Simplicity and efficiency**: Prefer the simplest working approach, avoid unnecessary complexity
 7. **Real-time verification over theory**: Users prefer through specific, verifiable tests to confirm tool functionality rather than accepting abstract explanations or promises
 8. **Operation must be based on actual interface**: Users expect operations to be based on verifiable interface states, not assumptions or inferences
+9. **Active skill updates**: Users expect proactive skill library updates after sessions, especially when workflow corrections or new techniques emerge
+10. **Educational context awareness**: Users are educators/technicians who work with student assignments and system maintenance, requiring practical solutions for file management and code review
 
 **Specific User Feedback Examples**:
 1. **关于界面验证**："你没打开界面你怎么截图的？你怎么知道有搜索按钮的？难道是推断的？" - 表明操作必须基于可验证的界面状态

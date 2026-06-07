@@ -27,10 +27,17 @@ trigger: 当用户需要给QQ好友发送消息时使用此技能
 2. `computer_use(action='click', element=42)` - 点击搜索框（元素#42，标签"搜索"）
 3. `computer_use(action='type', text='好友姓名')` - 输入好友姓名
 4. `computer_use(action='key', keys='return')` - 回车搜索
-5. `computer_use(action='wait', seconds=2)` - 等待搜索完成
-6. `computer_use(action='type', text='消息内容')` - 输入消息
-7. `computer_use(action='key', keys='return')` - 回车发送
-8. `computer_use(action='capture', app='QQ', mode='ax', max_elements=150)` - 验证发送结果
+5. `computer_use(action='wait', seconds=2)` - **等待搜索完成**（重要！）
+6. `computer_use(action='key', keys='return')` - **再次按回车键**，选择搜索结果中的第一个（通常是搜索的联系人）
+7. `computer_use(action='wait', seconds=2)` - **等待进入聊天界面**
+8. `computer_use(action='type', text='消息内容')` - 输入消息
+9. `computer_use(action='key', keys='return')` - 回车发送
+10. `computer_use(action='capture', app='QQ', mode='ax', max_elements=150)` - 验证发送结果
+
+**重要警告**：
+- **步骤6绝对不能省略**：必须按回车键选择搜索结果
+- **绝对不要按方向键**：方向键↓会选中第二个结果，导致消息发错人
+- **必须等待足够时间**：步骤5和7的等待确保界面完全加载
 
 ### 模式2：参数化调用
 当需要批量发送或灵活控制时，按上述步骤逐个调用工具。
@@ -57,11 +64,13 @@ trigger: 当用户需要给QQ好友发送消息时使用此技能
 1. computer_use(action='capture', app='QQ', mode='ax')
 2. computer_use(action='click', element=42)
 3. computer_use(action='type', text='张志文')
-4. computer_use(action='key', keys='return')
-5. computer_use(action='wait', seconds=2)
-6. computer_use(action='type', text='测试消息：这是通过qq-messaging技能发送的测试')
-7. computer_use(action='key', keys='return')
-8. computer_use(action='capture', app='QQ', mode='ax', max_elements=150)
+4. computer_use(action='key', keys='return')  # 搜索
+5. computer_use(action='wait', seconds=2)     # 等待搜索完成
+6. computer_use(action='key', keys='return')  # **重要**：选择搜索结果中的第一个
+7. computer_use(action='wait', seconds=2)     # 等待进入聊天界面
+8. computer_use(action='type', text='测试消息：这是通过qq-messaging技能发送的测试')
+9. computer_use(action='key', keys='return')  # 发送
+10. computer_use(action='capture', app='QQ', mode='ax', max_elements=150)
 ```
 
 ### 示例2：给"李四"发送不同消息
@@ -69,19 +78,42 @@ trigger: 当用户需要给QQ好友发送消息时使用此技能
 1. computer_use(action='capture', app='QQ', mode='ax')
 2. computer_use(action='click', element=42)
 3. computer_use(action='type', text='李四')
-4. computer_use(action='key', keys='return')
-5. computer_use(action='wait', seconds=2)
-6. computer_use(action='type', text='会议改到明天下午3点')
-7. computer_use(action='key', keys='return')
-8. computer_use(action='capture', app='QQ', mode='ax', max_elements=150)
+4. computer_use(action='key', keys='return')  # 搜索
+5. computer_use(action='wait', seconds=2)     # 等待搜索完成
+6. computer_use(action='key', keys='return')  # **重要**：选择搜索结果中的第一个
+7. computer_use(action='wait', seconds=2)     # 等待进入聊天界面
+8. computer_use(action='type', text='会议改到明天下午3点')
+9. computer_use(action='key', keys='return')  # 发送
+10. computer_use(action='capture', app='QQ', mode='ax', max_elements=150)
 ```
 
 ## 关键注意事项
 
-### 搜索后自动进入
-- 搜索完成后QQ会自动进入目标好友的聊天界面
-- **不需要**点击搜索结果按钮
-- 点击按钮反而可能导致进入好友卡片界面
+### cua-driver 新会话必须先 capture（重要）
+cua-driver 在每个新 Hermes 会话里第一次执行 `key`/`type` 操作前，**必须**先调用一次 `capture`，否则返回错误：
+```
+"No active window — call capture() first."
+```
+本技能步骤1的 `capture(app='QQ', mode='ax')` 同时承担了这个作用，**不要为了"节省 token"把步骤1跳过直接发快捷键**。即使你已经知道目标窗口和元素索引，第一次操作前的 capture 也是必需的。
+
+### 搜索后必须按回车键选择（重要更新）
+基于2026年6月4日的经验教训：
+- **搜索后第一个结果默认被选中**（通常是搜索的联系人）
+- **必须按一次回车键**选择这个结果
+- **绝对不要按方向键**（方向键↓会选中第二个结果，导致错误）
+- 等待2秒让界面加载完成
+
+**正确流程**：
+```
+搜索 → 回车（搜索） → 等待2秒 → 回车（选择第一个结果） → 等待2秒 → 输入消息
+```
+
+**错误流程**（避免）：
+```
+搜索 → 回车（搜索） → 方向键↓ → 回车（选择第二个结果） ❌
+```
+
+详细教训见：`references/2026-06-04-qq-search-enter-key-lesson.md`
 
 ### 避免使用ESC键
 - **不要按ESC键**，这会导致退出QQ界面
@@ -120,6 +152,37 @@ A：
 2. **使用元素索引**：优先使用元素索引而非坐标点击
 3. **适当等待**：操作间添加合理等待时间（2-3秒）
 4. **验证结果**：关键操作后验证执行结果
+5. **用户验证优先**：`ok: true`不等于成功，必须获得用户最终确认
+6. **标准化操作**：严格遵循技能中的步骤，避免凭记忆操作
+
+## 验证与故障排除
+
+### 重要警告：工具调用成功 ≠ 操作成功
+基于2026年6月4日的经验：
+- **所有`computer_use`工具调用可能都返回`ok: true`**
+- **但这不代表消息成功发送给了正确的人**
+- **必须获得用户的最终验证**
+
+### 验证流程
+1. **完成所有发送步骤**后，请求用户检查QQ聊天记录
+2. **如果用户说"没有收到"**：立即重新尝试完整流程
+3. **检查常见错误**：
+   - 是否按了方向键？（导致选中错误联系人）
+   - 是否按了足够的回车键？（需要两次：搜索一次，选择一次）
+   - 是否等待足够时间？（界面加载需要2秒）
+
+### 用户反馈处理
+**用户说"没有收到"时的应对**：
+1. **立即道歉**："抱歉，让我重新尝试"
+2. **重新执行完整流程**：从步骤1开始
+3. **特别注意**：确保步骤6（选择搜索结果）被执行
+4. **再次请求验证**：完成后再请用户检查
+
+### 成功模式记录
+当用户确认消息成功发送时：
+1. **记录成功模式**：使用的具体步骤和参数
+2. **更新技能**：将成功经验添加到技能中
+3. **建立信心**：相同模式可以重复使用
 
 ## 性能优化
 - 使用`mode='ax'`代替`mode='som'`可减少token消耗
@@ -150,76 +213,3 @@ computer_use(action='capture', app='QQ', mode='ax', max_elements=150)
 # 联系人：查找标签包含联系人姓名的ListItem元素
 # 输入框：查找标签包含"输入"的Edit元素
 ```
-
-## 用户验证要求
-
-### 基于实际界面的操作
-**用户明确要求**：操作必须基于实际看到的界面元素，而不是假设或推断。
-
-**关键用户反馈**：
-> "你没打开界面你怎么截图的？你怎么知道有搜索按钮的？难道是推断的？"
-
-**正确做法**：
-1. **始终先捕获**当前界面状态
-2. **验证元素存在**于当前捕获中
-3. **基于验证结果**执行操作
-4. **请求用户确认**关键操作结果
-
-### 操作验证流程
-```python
-# 1. 捕获当前界面
-result = computer_use(action='capture', app='QQ', mode='ax')
-
-# 2. 验证搜索框存在
-search_box_found = False
-for elem in result['elements']:
-    if '搜索' in elem.get('label', ''):
-        search_box_found = True
-        search_box_idx = elem['index']
-        break
-
-if not search_box_found:
-    print("找不到搜索框，请确认QQ界面已打开")
-    return
-
-# 3. 执行操作
-computer_use(action='click', element=search_box_idx)
-
-# 4. 请求用户验证
-print("已点击搜索框，请确认搜索框已获得焦点并可以输入")
-```
-
-### 消息发送后的验证
-```python
-# 完成所有发送步骤后
-print("已完成消息发送操作，所有工具调用返回成功。")
-print("请检查与[好友姓名]的QQ聊天记录，确认是否收到了消息。")
-
-# 处理用户反馈
-# 如果用户说"没有收到"：立即重新尝试完整流程
-# 如果用户说"收到了"：记录成功模式
-```
-
-## 工具行为一致性期望
-
-### 用户对一致性的关注
-**用户反馈**：
-> "我是5.31号让你操作qq的，你是可以识别qq界面的按钮，应该是截图的吧，我的模型一直是deepseek"
-
-**含义**：
-1. 用户注意并跟踪工具行为的一致性
-2. 期望在不同会话中保持相同能力
-3. 当出现不一致时，需要立即调查和解释
-
-### 一致性检查清单
-1. **元素识别**：搜索框是否仍然是元素#42？
-2. **界面布局**：QQ界面是否发生变化？
-3. **操作流程**：搜索后是否仍然自动进入聊天？
-4. **模型能力**：当前模型是否支持必要的功能？
-
-### 处理不一致性
-当用户指出不一致时：
-1. **立即调查**：检查当前界面状态
-2. **对比历史**：参考5月31日的成功记录
-3. **解释原因**：说明可能的变化（界面更新、模型限制等）
-4. **调整方法**：根据当前情况调整操作流程

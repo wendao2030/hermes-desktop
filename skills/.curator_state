@@ -1,9 +1,9 @@
 {
-  "last_report_path": null,
-  "last_run_at": "2026-05-26T23:57:55.535594+00:00",
-  "last_run_duration_seconds": null,
-  "last_run_summary": "deferred first run — curator seeded, will run after one interval; use `hermes curator run --dry-run` to preview now",
+  "last_report_path": "C:\\Users\\dtyao\\AppData\\Local\\hermes\\logs\\curator\\20260607-012101",
+  "last_run_at": "2026-06-07T01:21:01.561135+00:00",
+  "last_run_duration_seconds": 26.217324,
+  "last_run_summary": "auto: no changes; llm: Both skills are class-level umbrellas in distinct domains (desktop automation vs. educational grading workflows). Neither is a narrow one-session artifact at the SKILL.md level, and they don't form a cluster with each other — they serve unr…",
   "last_run_summary_shown_at": null,
   "paused": false,
-  "run_count": 0
+  "run_count": 1
 }

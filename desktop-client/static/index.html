@@ -247,54 +247,124 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 .recent-session:hover { background:rgba(200,180,155,0.15); }
 .recent-session .session-title { color:var(--text); flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .recent-session .session-time { color:var(--text2); font-size:11px; margin-left:12px; flex-shrink:0; }
+
+/* Employee list in sidebar */
+.employee-list { padding-left:8px; }
+.sidebar-employee-item { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; cursor:pointer; font-size:13px; margin-bottom:5px; transition:background .15s, color .15s; border:none; }
+.sidebar-employee-item:hover { background:rgba(200,180,155,0.15); }
+.sidebar-employee-item.active { background:var(--accent-light); color:#8a2e22; }
+.emp-emoji { font-size:22px; flex-shrink:0; width:30px; text-align:center; }
+.emp-info { flex:1; min-width:0; }
+.emp-name { font-weight:600; font-size:13px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.emp-role { font-size:11px; color:var(--text2); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+/* Employee chat top bar */
+.emp-top-bar { padding:12px 20px; border-bottom:1px solid rgba(200,180,155,0.3); background:rgba(255,252,248,0.6); display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.emp-top-bar .emp-avatar { font-size:28px; }
+.emp-top-bar .emp-name-big { font-weight:600; font-size:15px; color:var(--text); }
+.emp-top-bar .emp-role-big { font-size:12px; color:var(--text2); }
+.emp-top-bar .emp-actions { margin-left:auto; display:flex; gap:6px; }
+.emp-top-bar .emp-actions button { padding:6px 12px; border-radius:7px; cursor:pointer; font-size:12px; font-weight:500; border:1px solid transparent; transition:all .15s; }
+.emp-top-bar .btn-emp-trigger { background:linear-gradient(135deg, #d44a3e, #c0392b); color:#fff; }
+.emp-top-bar .btn-emp-trigger:hover { opacity:.9; }
+.emp-top-bar .btn-emp-workflow { background:transparent; color:var(--text2); border-color:var(--border); }
+.emp-top-bar .btn-emp-workflow:hover { background:rgba(200,180,155,0.15); }
+.emp-top-bar .btn-emp-edit { background:transparent; color:var(--text2); border-color:var(--border); }
+.emp-top-bar .btn-emp-edit:hover { background:rgba(200,180,155,0.15); }
+
+/* Learning section in edit dialog */
+.learn-section { background:rgba(46,134,193,0.04); border:1px solid rgba(46,134,193,0.15); border-radius:10px; padding:14px; margin-top:4px; }
+.learn-section label { font-size:12px; color:var(--blue); font-weight:600; display:block; margin-bottom:8px; }
+.learn-upload-row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+.learn-file-list { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+.learn-file-tag { display:inline-flex; align-items:center; gap:4px; padding:3px 10px; background:rgba(46,134,193,0.08); border:1px solid rgba(46,134,193,0.2); border-radius:12px; font-size:11px; color:var(--blue); }
+.learn-file-tag .remove { cursor:pointer; font-weight:bold; font-size:14px; line-height:1; }
+.learn-depth-row { display:flex; gap:8px; align-items:center; margin-bottom:10px; }
+.learn-depth-row select { width:100%; padding:7px 10px; border:1px solid var(--border); border-radius:7px; font-size:12px; background:#fff; color:var(--text); }
+.learn-btn-row { margin-bottom:4px; }
+.learn-hint { font-size:11px; color:var(--text2); margin-top:6px; }
+
+/* Home page employee cards */
+.emp-card { cursor:pointer; transition:transform .15s, box-shadow .15s; padding:16px; }
+.emp-card:hover { transform:translateY(-2px); box-shadow:0 4px 16px rgba(0,0,0,0.1); }
+.emp-card-header { display:flex; align-items:center; gap:10px; margin-bottom:8px; }
+.emp-card-header .emp-emoji { font-size:28px; flex-shrink:0; width:36px; text-align:center; }
+.emp-card-desc { font-size:12px; color:var(--text2); margin-bottom:10px; line-height:1.5; display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden; }
+.emp-card-actions { display:flex; gap:6px; justify-content:flex-end; }
+.empty-hint { text-align:center; padding:24px 0; font-size:13px; color:var(--text2); }
+
+/* Employee submenu under sidebar nav */
+.emp-submenu { padding:2px 4px 4px 20px; border-left:1px solid rgba(200,180,155,0.15); margin-left:12px; }
+.emp-submenu .sidebar-employee-item { padding:8px 10px; font-size:12px; }
+.emp-submenu .emp-emoji { font-size:18px; width:24px; }
+.emp-submenu .emp-name { font-size:12px; }
+.emp-submenu .emp-role { font-size:10px; }
+
+/* Add employee + button on nav item */
+.emp-add-btn { display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:14px;line-height:1;margin-left:auto;cursor:pointer;font-weight:bold;transition:opacity .15s; flex-shrink:0; }
+.emp-add-btn:hover { opacity:.85; }
+
+/* Home hero - Hermes main chat card */
+.home-hero { display:flex;align-items:center;gap:16px;padding:20px;background:linear-gradient(135deg,rgba(220,80,60,0.06),rgba(255,252,248,0.9));border:1px solid rgba(220,80,60,0.12);border-radius:14px;margin-bottom:16px;cursor:pointer;transition:transform .15s,box-shadow .15s; }
+.home-hero:hover { transform:translateY(-1px); box-shadow:0 4px 16px rgba(0,0,0,0.08); }
+.home-hero .hero-avatar { width:56px;height:56px;border-radius:14px;object-fit:cover;box-shadow:0 2px 8px rgba(0,0,0,0.1); flex-shrink:0; }
+.home-hero .hero-info { display:flex;flex-direction:column;gap:3px; }
+.home-hero .hero-info strong { font-size:16px;color:var(--text); }
+.home-hero .hero-info small { font-size:12px;color:var(--text2); }
+
+/* Emoji picker */
+.emoji-picker { position:relative; }
+.emoji-picker-current { display:inline-flex;align-items:center;justify-content:center;width:48px;height:40px;font-size:26px;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:#fff;transition:border-color .15s; user-select:none; }
+.emoji-picker-current:hover { border-color:var(--blue); }
+.emoji-picker-grid { position:absolute;top:calc(100% + 4px);left:0;z-index:400;display:grid;grid-template-columns:repeat(8,1fr);gap:4px;padding:10px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.15);width:280px; }
+.emoji-option { display:flex;align-items:center;justify-content:center;width:32px;height:32px;font-size:22px;cursor:pointer;border-radius:6px;transition:background .1s; user-select:none; }
+.emoji-option:hover { background:rgba(200,180,155,0.2); }
+.emoji-option.active { background:var(--accent-light); outline:2px solid var(--accent); }
+[v-cloak] { display: none; }
 </style>
 </head>
 <body>
-<div id="app">
+<div id="app" v-cloak>
+    <template v-if="appReady">
     <div class="sidebar">
-        <div class="sidebar-header">
+        <div class="sidebar-header" @click="switchToHome()" style="cursor:pointer;">
             <h2><img src="/static/hermes_logo.png" alt="Hermes"> Hermes 智能助手</h2>
-            <button class="btn-new-session" @click="newSession">+ 新建对话</button>
-        </div>
-        <div class="session-list" v-if="activeView === 'chat'">
-            <div class="session-list-header" @click="toggleSessionList">
-                <span class="session-list-title">📋 对话记录</span>
-                <span class="session-list-count" v-if="!sessionListCollapsed">{{ sessions.length }} 条</span>
-                <span class="session-list-toggle" :class="{ collapsed: sessionListCollapsed }">
-                    <svg width="12" height="12" viewBox="0 0 12 12"><path d="M3 4.5L6 7.5L9 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                </span>
-            </div>
-            <div class="session-list-body" :class="{ collapsed: sessionListCollapsed }">
-                <div
-                    v-for="s in sessions"
-                    :key="s.session_id"
-                    class="session-item"
-                    :class="{ active: s.session_id === currentSessionId }"
-                    @click="switchSession(s.session_id)"
-                    @contextmenu.prevent="showContextMenu($event, s.session_id)"
-                >
-                    <div class="title">{{ s.title || s.session_id.slice(-12) }}</div>
-                    <div class="date">{{ formatDate(s.created_at) }}</div>
-                </div>
-                <div v-if="sessions.length === 0" style="padding:20px;font-size:12px;color:var(--text2);">
-                    暂无对话
-                </div>
-            </div>
         </div>
         <div class="sidebar-nav">
-            <div class="sidebar-nav-item" :class="{ active: activeView === 'home' }" @click="switchToHome()">
-                <span class="nav-icon">🏠</span> 首页
-            </div>
-            <div class="sidebar-nav-item" :class="{ active: activeView === 'chat' }" @click="activeView = 'chat'">
+            <div class="sidebar-nav-item" :class="{ active: activeView === 'chat' }" @click="goToMainChat()">
                 <span class="nav-icon">💬</span> 对话
             </div>
-            <div class="sidebar-nav-item" :class="{ active: activeView === 'tasks' }" @click="switchToTasks()">
-                <span class="nav-icon">📋</span> 我的任务
-                <span class="nav-badge" v-if="cronJobs.length">{{ cronJobs.length }}</span>
+            <div class="sidebar-nav-item" :class="{ active: activeView === 'team' }">
+                <span class="nav-icon">📁</span> 我的员工
+                <span class="nav-badge" v-if="employees.length">{{ employees.length }}</span>
+                <span class="emp-add-btn" @click.stop="showNewEmployeeDialog = true" title="添加员工">+</span>
+            </div>
+            <div v-if="employees.length > 0" class="emp-submenu">
+                <div class="employee-list">
+                <div
+                    v-for="emp in employees"
+                    :key="emp.id"
+                    class="sidebar-employee-item"
+                    :class="{ active: currentSessionId && currentSessionId.startsWith(emp.session_id || emp.id) }"
+                    @click="chatWithEmployee(emp)"
+                    @contextmenu.prevent="showEmpContextMenu($event, emp)"
+                >
+                    <span class="emp-emoji">{{ emp.emoji || '😊' }}</span>
+                    <div class="emp-info">
+                        <div class="emp-name">{{ emp.name }}</div>
+                        <div class="emp-role">{{ emp.role || '未设定角色' }}</div>
+                    </div>
+                </div>
+                </div>
             </div>
             <div class="sidebar-nav-item" :class="{ active: activeView === 'skills' }" @click="switchToSkills()">
-                <span class="nav-icon">🧩</span> 我的技能
+                <span class="nav-icon">🧩</span> 技能
             </div>
+        </div>
+        <!-- Employee context menu -->
+        <div v-if="empContextMenu.visible" class="context-menu" :style="{ left: empContextMenu.x + 'px', top: empContextMenu.y + 'px' }" @click.stop @mouseleave="hideEmpContextMenu">
+            <div class="context-menu-item" @click="openEditEmployeeDialog(empContextMenu.emp)">✏️ 编辑</div>
+            <div class="context-menu-item danger" @click="deleteEmployeeFromMenu(empContextMenu.emp)">🗑 删除</div>
         </div>
         <div class="sidebar-footer">
             <button class="btn-minimize-bubble" @click="minimizeToBubble">最小化到悬浮窗</button>
@@ -305,6 +375,15 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             <div class="settings-panel" :class="{ open: showSettings }">
                 <div class="settings-panel-inner">
                     <button class="btn-settings-item" @click="showLog = !showLog; showSettings=false;" :class="{ active: showLog }">查看服务日志</button>
+                    <div style="display:flex;align-items:center;gap:6px;padding:8px 0;">
+                        <span style="font-size:12px;white-space:nowrap;">清除聊天：</span>
+                        <select @change="clearChatByRange($event.target.value); $event.target.value='';" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:#fff;color:var(--text);">
+                            <option value="">选择范围...</option>
+                            <option value="today">清除今天</option>
+                            <option value="week">清除过去一周</option>
+                            <option value="month">清除过去一月</option>
+                        </select>
+                    </div>
                 </div>
             </div>
         </div>
@@ -315,7 +394,16 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
         <!-- ========== HOME VIEW ========== -->
         <div v-if="activeView === 'home'" class="page-view">
             <div class="page-list">
-                <!-- Quick input -->
+                <!-- Hermes 主对话入口 -->
+                <div class="home-hero" @click="activeView = 'chat'" style="cursor:pointer;">
+                    <img src="/static/hermes_logo.png" alt="Hermes" class="hero-avatar">
+                    <div class="hero-info">
+                        <strong>Hermes 主对话</strong>
+                        <small>点击进入与 AI 的主对话</small>
+                    </div>
+                </div>
+
+                <!-- 快速输入 -->
                 <div class="home-input">
                     <div class="input-row">
                         <textarea
@@ -329,38 +417,40 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                     </div>
                 </div>
 
-                <!-- Pinned / 常用任务 -->
+                <!-- 我的团队 -->
+                <div class="home-section">
+                    <div class="home-section-header">
+                        <span class="home-section-title">👥 我的团队</span>
+                        <a class="home-section-link" @click="switchToTeam()">管理员工 →</a>
+                    </div>
+                    <div v-if="employees.length > 0" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;">
+                        <div v-for="emp in employees" :key="emp.id" class="card emp-card" @click="chatWithEmployee(emp)">
+                            <div class="emp-card-header">
+                                <span class="emp-emoji">{{ emp.emoji || '😊' }}</span>
+                                <div>
+                                    <div class="emp-name" style="font-weight:600;font-size:14px;">{{ emp.name }}</div>
+                                    <div class="emp-role" style="font-size:11px;color:var(--text2);margin-top:2px;">{{ emp.role || '未设定角色' }}</div>
+                                </div>
+                            </div>
+                            <div class="emp-card-desc">{{ emp.work_content || '暂无工作描述' }}</div>
+                            <div class="emp-card-actions">
+                                <button class="btn-sm action" @click.stop="chatWithEmployee(emp)">💬 对话</button>
+                                <button class="btn-sm ghost" @click.stop="openEditEmployeeDialog(emp)" style="font-size:11px;padding:4px 8px;">✏ 编辑</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div v-else class="empty-hint">
+                        <span>还没有员工，<a @click="showNewEmployeeDialog = true" style="color:var(--blue);cursor:pointer;">点击添加第一个员工</a></span>
+                    </div>
+                </div>
+
+                <!-- 常用任务 -->
                 <div class="home-section" v-if="pinnedTasks.length > 0">
                     <div class="home-section-header">
                         <span class="home-section-title">⭐ 常用任务</span>
                         <a class="home-section-link" @click="switchToTasks()">查看全部 →</a>
                     </div>
                     <div v-for="job in pinnedTasks.slice(0, 4)" :key="job.id" class="card task-card">
-                        <div class="card-header">
-                            <span class="card-name">{{ job.name || '未命名任务' }}</span>
-                            <span v-if="job.paused" class="badge gray">已暂停</span>
-                            <span v-else-if="job.schedule" class="badge blue">⏱ {{ formatSchedule(job.schedule) }}</span>
-                            <span v-else class="badge green">手动触发</span>
-                        </div>
-                        <div class="card-desc">{{ job.prompt || '暂无描述' }}</div>
-                        <div class="card-meta" style="justify-content:space-between;">
-                            <span class="task-status">
-                                <span v-if="job.last_run_at">上次: {{ formatDate(job.last_run_at) }}</span>
-                                <span v-if="job.last_status" :class="job.last_status === 'ok' ? 'ok' : 'fail'">
-                                    {{ job.last_status === 'ok' ? ' ✅' : ' ❌' }}
-                                </span>
-                            </span>
-                            <button class="btn-sm action" @click.stop="triggerJob(job.id)">▶ 执行</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 最近执行的任务 -->
-                <div class="home-section" v-if="recentTasks.length > 0">
-                    <div class="home-section-header">
-                        <span class="home-section-title">🕐 最近任务</span>
-                    </div>
-                    <div v-for="job in recentTasks.slice(0, 4)" :key="job.id" class="card task-card">
                         <div class="card-header">
                             <span class="card-name">{{ job.name || '未命名任务' }}</span>
                             <span v-if="job.paused" class="badge gray">已暂停</span>
@@ -401,23 +491,12 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                     </div>
                 </div>
 
-                <!-- Recent sessions -->
-                <div class="home-section" v-if="sessions.length > 0">
-                    <div class="home-section-header">
-                        <span class="home-section-title">📁 最近对话</span>
-                    </div>
-                    <div v-for="s in sessions.slice(0, 5)" :key="s.session_id" class="recent-session" @click="switchSession(s.session_id); activeView = 'chat'">
-                        <span class="session-title">{{ s.title || s.session_id.slice(-12) }}</span>
-                        <span class="session-time">{{ formatDate(s.created_at) }}</span>
-                    </div>
-                </div>
-
                 <!-- Empty welcome -->
-                <div v-if="sessions.length === 0 && cronJobs.length === 0" class="chat-empty">
+                <div v-if="employees.length === 0 && cronJobs.length === 0" class="chat-empty">
                     <div>
                         <img src="/static/hermes_logo.png" alt="Hermes" style="width:100px;height:100px;border-radius:20px;object-fit:cover;margin-bottom:16px;box-shadow:0 4px 16px rgba(0,0,0,0.12);">
                         <strong>欢迎使用 Hermes 智能助手</strong><br>
-                        <small style="color:var(--text2);">在下方输入你的问题开始使用</small>
+                        <small style="color:var(--text2);">在下方输入你的问题开始使用，或添加你的第一个员工</small>
                     </div>
                 </div>
             </div>
@@ -447,6 +526,14 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                 <div v-else class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
             </template>
 
+            <!-- When thinking but no messages and no streaming text yet, show centered indicator -->
+            <div v-if="isThinking && messages.length === 0 && !streamingText" style="flex:1;display:flex;align-items:center;justify-content:center;">
+                <div style="text-align:center;color:var(--text2);">
+                    <div style="font-size:32px;margin-bottom:12px;">🤔</div>
+                    <div style="font-size:14px;margin-bottom:6px;color:var(--text);">Hermes 正在思考中...</div>
+                    <div style="font-size:12px;">请稍候</div>
+                </div>
+            </div>
             <div v-if="isThinking" class="thinking-bar" @click="showToolDetails = !showToolDetails">
                 <div class="thinking-left">
                     <span class="thinking-dot"></span>
@@ -493,51 +580,84 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             </div>
         </div>
 
-        <!-- ========== TASKS VIEW ========== -->
-        <div v-if="activeView === 'tasks'" class="page-view">
-            <div class="page-toolbar">
-                <span class="toolbar-title">我的任务</span>
-                <button class="btn-sm primary" @click="createScheduledTask">+ 新建任务</button>
-                <div class="filter-tabs" style="margin-left:12px;">
-                    <button class="filter-tab" :class="{ active: taskFilter === 'all' }" @click="taskFilter = 'all'">全部</button>
-                    <button class="filter-tab" :class="{ active: taskFilter === 'scheduled' }" @click="taskFilter = 'scheduled'">定时</button>
-                    <button class="filter-tab" :class="{ active: taskFilter === 'manual' }" @click="taskFilter = 'manual'">手动</button>
-                    <button class="filter-tab" :class="{ active: taskFilter === 'pinned' }" @click="taskFilter = 'pinned'">⭐ 常用</button>
+        <!-- ========== TEAM CHAT VIEW ========== -->
+        <div v-if="activeView === 'team' && currentEmployee" class="page-view">
+            <!-- Top bar with employee info and actions -->
+            <div class="emp-top-bar">
+                <span class="emp-avatar">{{ currentEmployee.emoji || '😊' }}</span>
+                <div>
+                    <div class="emp-name-big">{{ currentEmployee.name }}</div>
+                    <div class="emp-role-big">{{ currentEmployee.role || '未设定角色' }}</div>
                 </div>
-                <span style="font-size:12px;color:var(--text2);margin-left:auto;">{{ filteredCronJobs.length }} 个任务</span>
+                <div class="emp-actions">
+                    <button class="btn-emp-trigger" @click="triggerEmployeeWithConfirm()">▶ 立即执行</button>
+                    <button class="btn-emp-workflow" @click="openWorkflowDesigner(currentEmployee)">📋 工作流</button>
+                    <button class="btn-emp-edit" @click="openEditEmployeeDialog(currentEmployee)">✏️ 编辑</button>
+                </div>
             </div>
-            <div class="page-list">
-                <div v-if="filteredCronJobs.length === 0" class="empty-state">
-                    <div class="empty-icon">📋</div>
-                    <div class="empty-title">{{ cronJobs.length === 0 ? '还没有任务' : '没有匹配的任务' }}</div>
-                    <div class="empty-hint" v-if="cronJobs.length === 0">点击「+ 新建任务」让智能体帮你创建，或在对话中完成流程后点「📌 保存为任务」</div>
-                </div>
-                <div v-for="job in filteredCronJobs" :key="job.id" class="card task-card">
-                    <div class="card-header">
-                        <span class="card-name">{{ job.name || '未命名任务' }}</span>
-                        <div style="display:flex;align-items:center;gap:4px;">
-                            <button class="btn-sm star" :class="{ active: isPinned(job.id) }" @click.stop="togglePin(job.id)" :title="isPinned(job.id) ? '取消常用' : '设为常用'">⭐</button>
-                            <span v-if="job.paused" class="badge gray">已暂停</span>
-                            <span v-else-if="job.schedule" class="badge blue">⏱ {{ formatSchedule(job.schedule) }}</span>
-                            <span v-else class="badge green">手动触发</span>
-                        </div>
-                    </div>
-                    <div class="card-desc">{{ job.prompt || '暂无描述' }}</div>
-                    <div class="card-meta" style="justify-content:space-between;">
-                        <span class="task-status">
-                            <span v-if="job.last_run_at">上次: {{ formatDate(job.last_run_at) }}</span>
-                            <span v-if="job.last_status" :class="job.last_status === 'ok' ? 'ok' : 'fail'">
-                                {{ job.last_status === 'ok' ? ' ✅' : ' ❌' }}
-                            </span>
-                        </span>
-                        <div style="display:flex;gap:4px;">
-                            <button class="btn-sm action" @click.stop="triggerJob(job.id)">▶ 执行</button>
-                            <button v-if="!job.paused && job.schedule" class="btn-sm warn" @click.stop="pauseJob(job.id)">⏸</button>
-                            <button v-if="job.paused" class="btn-sm action" @click.stop="resumeJob(job.id)">▶ 恢复</button>
-                            <button class="btn-sm danger" @click.stop="deleteJob(job.id)">✕</button>
-                        </div>
+            <div class="chat-area team-chat-area" ref="chatArea" style="flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;min-height:200px;">
+                <!-- Welcome: only when truly idle -->
+                <div v-if="messages.length === 0 && !isThinking && !streamingText && isEmployeeChatting" class="chat-empty" style="flex:1;display:flex;align-items:center;justify-content:center;">
+                    <div>
+                        <img :src="'/static/bubble_icon.png'" alt="Hermes" style="width:120px;height:120px;border-radius:20px;object-fit:cover;margin-bottom:20px;">
+                        <strong>与 {{ currentEmployee.name }} 的对话</strong><br>
+                        <small style="color:var(--text2)">输入消息开始对话</small>
                     </div>
                 </div>
+                <template v-for="(msg, idx) in messages" :key="'emp-'+idx">
+                    <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
+                        <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
+                        <div>
+                            <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                        </div>
+                    </div>
+                    <div v-else class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                </template>
+                <div v-if="isThinking && streamingText" class="msg-row agent">
+                    <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
+                    <div>
+                        <div class="message agent-streaming" v-html="renderMarkdown(streamingText)"></div>
+                    </div>
+                </div>
+                <!-- When thinking but no messages and no streaming text yet, show centered indicator -->
+                <div v-if="isThinking && messages.length === 0 && !streamingText" style="flex:1;display:flex;align-items:center;justify-content:center;">
+                    <div style="text-align:center;color:var(--text2);">
+                        <div style="font-size:32px;margin-bottom:12px;">{{ (currentEmployee || {}).emoji || '🤔' }}</div>
+                        <div style="font-size:14px;margin-bottom:6px;color:var(--text);">{{ (currentEmployee || {}).name || '' }} 正在思考中...</div>
+                        <div style="font-size:12px;">请稍候</div>
+                    </div>
+                </div>
+                <!-- thinking-bar always visible when isThinking, so user sees activity -->
+                <div v-if="isThinking" class="thinking-bar" style="flex-shrink:0;">
+                    <div class="thinking-left">
+                        <span class="thinking-dot"></span>
+                        <span class="thinking-dot"></span>
+                        <span class="thinking-dot"></span>
+                        <span class="thinking-text">{{ currentEmployee ? currentEmployee.name + ' 正在思考中...' : '正在处理中' }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Employee input area -->
+            <div style="padding:14px 24px;border-top:1px solid rgba(200,180,155,0.2);background:rgba(255,252,248,0.4);">
+                <div class="input-row">
+                    <textarea
+                        v-model="inputText"
+                        :placeholder="'输入消息给 ' + (currentEmployee.name || '') + '...'"
+                        @keydown="handleEmpKeydown"
+                        rows="1"
+                        style="background:#fff;border-color:rgba(200,180,155,0.4);"
+                    ></textarea>
+                    <button v-if="isThinking" class="btn-stop" @click="stopEmpResponse">停止</button>
+                    <button v-else @click="sendToEmployee" :disabled="!inputText.trim()">发送</button>
+                </div>
+            </div>
+        </div>
+        <div v-if="activeView === 'team' && !currentEmployee" class="page-view" style="display:flex;align-items:center;justify-content:center;">
+            <div class="empty-state">
+                <div class="empty-icon">👥</div>
+                <div class="empty-title">选择一个团队成员开始对话</div>
+                <div class="empty-hint">从左侧列表中选择成员，或添加新成员</div>
             </div>
         </div>
 
@@ -627,8 +747,205 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
         <div class="context-menu-item" @click="copySelected" v-if="rightClickMenu.selected">复制选中文字</div>
         <div class="context-menu-item" @click="copyAll">复制全部内容</div>
     </div>
+
+    <!-- ========== NEW EMPLOYEE DIALOG ========== -->
+    <div v-if="showNewEmployeeDialog" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:300;display:flex;align-items:center;justify-content:center;" @click.self="showNewEmployeeDialog = false">
+        <div style="background:#fff;border-radius:12px;padding:24px;width:440px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                <span style="font-size:16px;font-weight:600;">新建员工</span>
+                <button style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);" @click="showNewEmployeeDialog = false">&times;</button>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">名称 *</label>
+                    <input v-model="newEmployee.name" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="给员工起个名字">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">头像</label>
+                    <div class="emoji-picker">
+                        <span class="emoji-picker-current" @click="showEmojiPicker = !showEmojiPicker">{{ newEmployee.emoji || '😊' }}</span>
+                        <div v-if="showEmojiPicker" class="emoji-picker-grid">
+                            <span v-for="e in emojiOptions" :key="e" class="emoji-option" :class="{ active: newEmployee.emoji === e }" @click="newEmployee.emoji = e; showEmojiPicker = false;">{{ e }}</span>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">角色/职位</label>
+                    <input v-model="newEmployee.role" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="例如：设计师、开发工程师">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">性格特征</label>
+                    <textarea v-model="newEmployee.personality" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;" placeholder="描述这个员工的性格特点..."></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作目标</label>
+                    <input v-model="newEmployee.goal" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="这个员工要完成什么目标？">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作内容</label>
+                    <textarea v-model="newEmployee.work_content" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;" placeholder="具体做什么工作..."></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作步骤</label>
+                    <textarea v-model="newEmployee.work_steps" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;" placeholder="分步骤描述工作流程..."></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">自我成长/学习方向</label>
+                    <input v-model="newEmployee.self_growth" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="这个员工要学习什么？">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">注意事项</label>
+                    <textarea v-model="newEmployee.notes" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;" placeholder="需要注意什么..."></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作模式</label>
+                    <select v-model="newEmployee.work_mode" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+                        <option value="manual">手动触发</option>
+                        <option value="混合模式">混合模式</option>
+                    </select>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+                <button class="btn-sm ghost" @click="showNewEmployeeDialog = false">取消</button>
+                <button class="btn-sm primary" @click="createEmployee" :disabled="!newEmployee.name.trim()">创建</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== EDIT EMPLOYEE DIALOG ========== -->
+    <div v-if="showEditEmployeeDialog" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:300;display:flex;align-items:center;justify-content:center;" @click.self="showEditEmployeeDialog = false">
+        <div style="background:#fff;border-radius:12px;padding:24px;width:440px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                <span style="font-size:16px;font-weight:600;">编辑员工</span>
+                <button style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);" @click="showEditEmployeeDialog = false">&times;</button>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">名称</label>
+                    <input v-model="editEmployeeForm.name" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">头像</label>
+                    <div class="emoji-picker">
+                        <span class="emoji-picker-current" @click="showEditEmojiPicker = !showEditEmojiPicker">{{ editEmployeeForm.emoji || '😊' }}</span>
+                        <div v-if="showEditEmojiPicker" class="emoji-picker-grid">
+                            <span v-for="e in emojiOptions" :key="e" class="emoji-option" :class="{ active: editEmployeeForm.emoji === e }" @click="editEmployeeForm.emoji = e; showEditEmojiPicker = false;">{{ e }}</span>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">角色/职位</label>
+                    <input v-model="editEmployeeForm.role" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">性格特征</label>
+                    <textarea v-model="editEmployeeForm.personality" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;"></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作目标</label>
+                    <input v-model="editEmployeeForm.goal" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作内容</label>
+                    <textarea v-model="editEmployeeForm.work_content" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;"></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作步骤</label>
+                    <textarea v-model="editEmployeeForm.work_steps" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;"></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">自我成长/学习方向</label>
+                    <input v-model="editEmployeeForm.self_growth" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">注意事项</label>
+                    <textarea v-model="editEmployeeForm.notes" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;"></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作模式</label>
+                    <select v-model="editEmployeeForm.work_mode" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+                        <option value="manual">手动触发</option>
+                        <option value="混合模式">混合模式</option>
+                    </select>
+                </div>
+                <!-- Learning section -->
+                <div class="learn-section">
+                    <label>📖 让员工学习资料</label>
+                    <div class="learn-upload-row">
+                        <input ref="editLearnFileInput" type="file" multiple style="display:none;" @change="uploadEditEmployeeFile">
+                        <button class="btn-sm ghost" type="button" @click="triggerEditFileUpload" style="flex-shrink:0;">📎 上传文件</button>
+                        <span style="font-size:11px;color:var(--text2);">上传本地资料让员工学习</span>
+                    </div>
+                    <div class="learn-file-list" v-if="editEmployeeFiles.length > 0">
+                        <div v-for="f in editEmployeeFiles" :key="f.name" class="learn-file-tag">
+                            {{ f.name }}
+                            <span class="remove" @click="removeEditEmployeeFile(f.name)">&times;</span>
+                        </div>
+                    </div>
+                    <div class="learn-depth-row">
+                        <label style="font-size:12px;color:var(--text2);white-space:nowrap;">学习深度：</label>
+                        <select v-model="editLearnDepth">
+                            <option value="quick">🟢 快速浏览（5%）</option>
+                            <option value="extract">🟡 提取要点（20%）</option>
+                            <option value="deep" selected>🟠 深度学习（50%）</option>
+                            <option value="full">🔴 全面学习（100%）</option>
+                        </select>
+                    </div>
+                    <div class="learn-btn-row">
+                        <button class="btn-sm action" @click="startLearningNow" :disabled="isLearning || editEmployeeFiles.length === 0" style="width:100%;">
+                            {{ isLearning ? '学习中...' : '📖 立即学习' }}
+                        </button>
+                    </div>
+                    <div class="learn-hint">员工将阅读上传的文件并提炼关键知识到知识库</div>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+                <button class="btn-sm ghost" @click="showEditEmployeeDialog = false">取消</button>
+                <button class="btn-sm primary" @click="saveEmployee">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== WORKFLOW DESIGNER DIALOG ========== -->
+    <div v-if="showWorkflowDialog" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:310;display:flex;align-items:center;justify-content:center;" @click.self="closeWorkflowDialog">
+        <div style="background:#fff;border-radius:12px;padding:24px;width:480px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                <span style="font-size:16px;font-weight:600;">📋 工作流设计</span>
+                <button style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);" @click="closeWorkflowDialog">&times;</button>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作步骤（每行一个步骤）</label>
+                    <textarea v-model="workflowSteps" rows="8" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;font-family:var(--mono);" placeholder="1. 步骤名称：操作描述&#10;2. 步骤名称：操作描述&#10;..."></textarea>
+                </div>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <button class="btn-sm ghost" @click="generateWorkflowWithAI" style="flex:1;">🤖 AI 自动生成步骤</button>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+                <button class="btn-sm ghost" @click="closeWorkflowDialog">取消</button>
+                <button class="btn-sm primary" @click="saveWorkflowSettings">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== TRIGGER CONFIRMATION DIALOG ========== -->
+    <div v-if="showWorkflowConfirm" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:320;display:flex;align-items:center;justify-content:center;" @click.self="cancelTrigger">
+        <div style="background:#fff;border-radius:12px;padding:24px;width:440px;max-height:70vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                <span style="font-size:16px;font-weight:600;">确认执行任务</span>
+                <button style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);" @click="cancelTrigger">&times;</button>
+            </div>
+            <div style="font-size:13px;line-height:1.8;white-space:pre-wrap;color:var(--text);padding:12px;background:rgba(250,245,238,0.5);border-radius:8px;" v-html="renderMarkdown(workflowSummary)"></div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+                <button class="btn-sm ghost" @click="cancelTrigger">取消</button>
+                <button class="btn-sm primary" @click="confirmTrigger">▶ 确认执行</button>
+            </div>
+        </div>
+    </div>
+    </template>
 </div>
 
-<script src="/static/app.js?v=15"></script>
+<script src="/static/app.js?v=20"></script>
 </body>
 </html>
