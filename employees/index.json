@@ -1,0 +1,22 @@
+{
+  "employees": [
+    {
+      "id": "emp-3e664a0c",
+      "name": "小美",
+      "emoji": "👩‍💼",
+      "role": "设计师",
+      "style": "",
+      "personality": "可以设计出漂亮的图片",
+      "tone": "",
+      "goal": "",
+      "steps": "",
+      "notes": "",
+      "learn_topics": "",
+      "auto_learn": "关闭",
+      "learn_keywords": "",
+      "work_mode": "混合模式",
+      "created_at": "2026-06-06T23:51:19.718326",
+      "session_id": "20260607_125547_b8d36e72"
+    }
+  ]
+}
