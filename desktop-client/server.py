@@ -176,6 +176,7 @@ def _build_agent_prompt(emp: dict) -> str | None:
 sessions = {}  # {session_id: {"agent": AIAgent, "history": [], "created_at": datetime, "title": str}}
 session_lock = threading.Lock()
 session_db = SessionDB(HERMES_HOME / "state.db")
+DESKTOP_STATE_PATH = HERMES_HOME / "desktop-client" / "state.json"
 
 # --- Auto-shutdown when browser closes ---
 active_connections = 0
@@ -211,6 +212,83 @@ def do_shutdown():
 
 def generate_session_id():
     return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+
+def _load_desktop_state() -> dict:
+    try:
+        if DESKTOP_STATE_PATH.exists():
+            data = json.loads(DESKTOP_STATE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception as e:
+        log_msg("WARN", f"Failed to load desktop state: {e}")
+    return {}
+
+def _save_desktop_state(data: dict) -> None:
+    try:
+        DESKTOP_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DESKTOP_STATE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        log_msg("WARN", f"Failed to save desktop state: {e}")
+
+def _session_exists(session_id: str) -> bool:
+    if not session_id:
+        return False
+    with session_lock:
+        if session_id in sessions:
+            return True
+    try:
+        return bool(session_db.get_session(session_id))
+    except Exception:
+        return False
+
+def _employee_session_ids() -> set[str]:
+    try:
+        return {
+            str(emp.get("session_id"))
+            for emp in (_load_employees_index().get("employees") or [])
+            if emp.get("session_id")
+        }
+    except Exception:
+        return set()
+
+def _latest_main_session_id() -> str:
+    employee_sids = _employee_session_ids()
+    try:
+        rows = session_db.list_sessions_rich(
+            source=SESSION_SOURCE,
+            limit=200,
+            order_by_last_active=True,
+        )
+        for row in rows:
+            sid = row.get("id") or row.get("session_id") or ""
+            if sid and sid not in employee_sids:
+                return sid
+    except Exception as e:
+        log_msg("WARN", f"Failed to find latest main session from DB: {e}")
+
+    with session_lock:
+        candidates = [
+            (sid, s)
+            for sid, s in sessions.items()
+            if sid not in employee_sids
+        ]
+    if not candidates:
+        return ""
+    candidates.sort(key=lambda item: item[1].get("created_at") or datetime.min, reverse=True)
+    return candidates[0][0]
+
+def _get_main_session_id() -> str:
+    state = _load_desktop_state()
+    sid = str(state.get("main_session_id") or "")
+    if _session_exists(sid):
+        return sid
+    return _latest_main_session_id()
+
+def _set_main_session_id(session_id: str) -> None:
+    state = _load_desktop_state()
+    state["main_session_id"] = session_id
+    state["main_session_updated_at"] = datetime.now().isoformat()
+    _save_desktop_state(state)
 
 def _ts_to_iso(value: Any) -> str:
     try:
@@ -794,6 +872,22 @@ async def new_session():
             sessions[session_id] = _empty_session()
     return {"session_id": session_id}
 
+@app.get("/api/main-session")
+async def get_main_session():
+    """Return the remembered main-chat session, falling back to latest non-employee chat."""
+    session_id = _get_main_session_id()
+    return {"session_id": session_id}
+
+@app.post("/api/main-session")
+async def set_main_session(request: Request):
+    data = await request.json()
+    session_id = str(data.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Missing session_id")
+    _ensure_session_record(session_id)
+    _set_main_session_id(session_id)
+    return {"ok": True, "session_id": session_id}
+
 @app.get("/api/sessions")
 async def list_sessions():
     result = []
@@ -875,6 +969,14 @@ async def delete_session(session_id: str):
     with session_lock:
         if session_id in sessions:
             del sessions[session_id]
+    try:
+        state = _load_desktop_state()
+        if state.get("main_session_id") == session_id:
+            state.pop("main_session_id", None)
+            state.pop("main_session_updated_at", None)
+            _save_desktop_state(state)
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Main session state cleanup failed: {e}")
     try:
         session_db.delete_session(session_id)
     except Exception as e:
@@ -1786,14 +1888,30 @@ if __name__ == "__main__":
             pil_img = _PILImage.open(png_path).convert("RGBA")
             pil_img = pil_img.resize((BUBBLE_SIZE, BUBBLE_SIZE), _PILImage.LANCZOS)
 
-            # Create a magenta background image
+            # Many PNG icons are RGB (no alpha channel) with white "transparent"
+            # areas.  Convert RGBA to give those near-white pixels alpha=0 so
+            # they can be replaced by the magenta color-key below.
+            _THRESHOLD = 240
+            datas = pil_img.getdata()
+            new_data = []
+            for item in datas:
+                r, g, b, a = item
+                if r > _THRESHOLD and g > _THRESHOLD and b > _THRESHOLD:
+                    new_data.append((255, 0, 255, 0))   # transparent -> magenta key
+                else:
+                    new_data.append((r, g, b, a))
+            pil_img.putdata(new_data)
+
+            # Create a magenta background image and composite
             bg = _PILImage.new("RGBA", pil_img.size, (255, 0, 255, 255))
-            # Composite PNG onto magenta background
             composite = _PILImage.alpha_composite(bg, pil_img)
+
+            # Convert to RGB before saving — BMP does NOT support alpha.
+            rgb_composite = composite.convert("RGB")
 
             # Save as BMP to memory
             bmp_bytes = _io.BytesIO()
-            composite.save(bmp_bytes, format="BMP")
+            rgb_composite.save(bmp_bytes, format="BMP")
             bmp_data = bmp_bytes.getvalue()
 
             # Write BMP to temp file for LoadImageW

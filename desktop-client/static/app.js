@@ -373,22 +373,24 @@ const app = createApp({
 
                     const finalText = data.text || '';
 
-                    // Turn off thinking FIRST so the UI transitions out of
-                    // the thinking state before we add the final agent message.
-                    // This prevents a brief flash where the thinking bar
-                    // disappears and the message appears simultaneously.
-                    isThinking.value = false;
+                    // Commit the streamed/final text first.
+                    // We defer clearing streamingText + isThinking to nextTick
+                    // so Vue can render the committed message BEFORE the
+                    // agent-streaming pseudo-message (from displayedMessages
+                    // computed) is torn down.  Otherwise the diff between
+                    // "remove agent-streaming" and "add agent" can produce
+                    // a visible white flash.
+                    const hasStream = streamingText.value.trim();
+                    if (hasStream) {
+                        addMessage('agent', streamingText.value);
+                    } else if (finalText && finalText !== '(no response)') {
+                        addMessage('agent', finalText);
+                    }
 
-                    // Use nextTick to ensure the thinking→idle transition
-                    // has rendered before we append the agent message.
+                    // Defer state cleanup to after Vue renders the new message
                     nextTick(function() {
-                        // Flush any remaining streaming text as the final agent message.
-                        if (streamingText.value.trim()) {
-                            addMessage('agent', streamingText.value);
-                        } else if (finalText && finalText !== '(no response)') {
-                            addMessage('agent', finalText);
-                        }
                         streamingText.value = '';
+                        isThinking.value = false;
                         scrollToBottom();
                     });
 
@@ -405,8 +407,10 @@ const app = createApp({
                 case 'error':
                     _resetThinkFilter();
                     addMessage('system', '[ERROR] ' + data.text);
-                    isThinking.value = false;
-                    streamingText.value = '';
+                    nextTick(function() {
+                        isThinking.value = false;
+                        streamingText.value = '';
+                    });
                     break;
 
                 case 'info':
@@ -1379,6 +1383,7 @@ const app = createApp({
                 const data = await resp.json();
                 mainSessionId.value = data.session_id;
                 localStorage.setItem('hermes_main_session', data.session_id);
+                await saveMainSessionId(data.session_id);
                 await loadSessions();
                 switchSession(data.session_id);
             } catch (e) {
@@ -1488,6 +1493,31 @@ const app = createApp({
             }
         }
 
+        async function loadServerMainSessionId() {
+            try {
+                const resp = await fetch('/api/main-session');
+                if (!resp.ok) return '';
+                const data = await resp.json();
+                return data.session_id || '';
+            } catch (e) {
+                console.error('Load main session error:', e);
+                return '';
+            }
+        }
+
+        async function saveMainSessionId(sid) {
+            if (!sid) return;
+            try {
+                await fetch('/api/main-session', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sid }),
+                });
+            } catch (e) {
+                console.error('Save main session error:', e);
+            }
+        }
+
         async function loadConfig() {
             try {
                 const resp = await fetch('/api/config');
@@ -1536,9 +1566,24 @@ const app = createApp({
                 // It is NEVER derived from the session list — we don't "pick" one.
                 // When mainSessionId is empty or the stored session no longer exists,
                 // we create a brand new session via /api/session/new.
-                const storedMainId = mainSessionId.value;
-                const storedSessionExists = storedMainId &&
+                let storedMainId = mainSessionId.value;
+                var storedSessionExists = storedMainId &&
                     sessions.value.some(s => s.session_id === storedMainId);
+
+                // localStorage can be unavailable or reset by the embedded
+                // browser shell.  Keep the canonical main-session pointer on
+                // the server as well, and fall back to the latest non-employee
+                // desktop session so previous main-chat history survives an
+                // application restart.
+                if (!storedSessionExists) {
+                    const serverMainId = await loadServerMainSessionId();
+                    if (serverMainId) {
+                        storedMainId = serverMainId;
+                        storedSessionExists = true;
+                        mainSessionId.value = serverMainId;
+                        localStorage.setItem('hermes_main_session', serverMainId);
+                    }
+                }
 
                 if (!storedMainId || !storedSessionExists) {
                     // No valid main session: create a new one
@@ -1546,6 +1591,7 @@ const app = createApp({
                     const data = await resp.json();
                     mainSessionId.value = data.session_id;
                     localStorage.setItem('hermes_main_session', data.session_id);
+                    await saveMainSessionId(data.session_id);
                     currentSessionId.value = data.session_id;
                     await loadSessions();
                     loadSessionHistory(data.session_id);
