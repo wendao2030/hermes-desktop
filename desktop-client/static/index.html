@@ -321,12 +321,24 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 .emoji-option:hover { background:rgba(200,180,155,0.2); }
 .emoji-option.active { background:var(--accent-light); outline:2px solid var(--accent); }
 [v-cloak] { display: none; }
+
+.startup-overlay { position:fixed; inset:0; z-index:1000; display:flex; align-items:center; justify-content:center; background:rgba(250,246,240,0.72); backdrop-filter:blur(2px); pointer-events:none; }
+.startup-card { display:flex; flex-direction:column; align-items:center; gap:8px; padding:22px 28px; background:rgba(255,252,248,0.94); border:1px solid rgba(200,180,155,0.35); border-radius:16px; box-shadow:0 12px 40px rgba(74,59,48,0.08); color:var(--text); }
+.startup-card img { width:54px; height:54px; border-radius:12px; object-fit:cover; }
+.startup-card small { color:var(--text2); font-size:12px; }
+.initializing { pointer-events:none; }
 </style>
 </head>
 <body>
 <div id="app" v-cloak>
-    <template v-if="appReady">
-    <div class="sidebar">
+    <div v-if="!appReady" class="startup-overlay">
+        <div class="startup-card">
+            <img src="/static/hermes_logo.png" alt="Hermes">
+            <strong>Hermes 正在准备中...</strong>
+            <small>正在连接会话，界面会保持可见</small>
+        </div>
+    </div>
+    <div class="sidebar" :class="{ initializing: !appReady }">
         <div class="sidebar-header" @click="switchToHome()" style="cursor:pointer;">
             <h2><img src="/static/hermes_logo.png" alt="Hermes"> Hermes 智能助手</h2>
         </div>
@@ -389,7 +401,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
         </div>
     </div>
 
-    <div class="main">
+    <div class="main" :class="{ initializing: !appReady }">
 
         <!-- ========== HOME VIEW ========== -->
         <div v-if="activeView === 'home'" class="page-view">
@@ -512,11 +524,11 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                 </div>
             </div>
 
-            <template v-for="(msg, idx) in displayedMessages" :key="idx">
-                <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
+            <template v-for="(msg, idx) in displayedMessages" :key="msg._originalIdx >= 0 ? 'msg-' + msg._originalIdx : 'streaming'">
+                <div v-if="msg.role === 'agent' || msg.role === 'assistant' || msg.role === 'agent-streaming'" class="msg-row agent">
                     <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
                     <div>
-                        <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                        <div class="message" :class="msg.role === 'assistant' ? 'agent' : msg.role" v-html="msg.html || msg.content"></div>
                         <!-- Save as task button only on the last agent message -->
                         <div class="msg-actions" v-if="msg.role === 'agent' && !isThinking && idx === lastDisplayedAgentIdx">
                             <button class="btn-save-task" @click="saveAsTask(msg._originalIdx)" title="把这次对话的流程保存为可执行的任务">📌 保存为任务</button>
@@ -604,21 +616,15 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                         <small style="color:var(--text2)">输入消息开始对话</small>
                     </div>
                 </div>
-                <template v-for="(msg, idx) in messages" :key="'emp-'+idx">
-                    <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
+                <template v-for="(msg, idx) in displayedMessages" :key="msg._originalIdx >= 0 ? 'emp-msg-' + msg._originalIdx : 'emp-streaming'">
+                    <div v-if="msg.role === 'agent' || msg.role === 'assistant' || msg.role === 'agent-streaming'" class="msg-row agent">
                         <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
                         <div>
-                            <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                            <div class="message" :class="msg.role === 'assistant' ? 'agent' : msg.role" v-html="msg.html || msg.content"></div>
                         </div>
                     </div>
                     <div v-else class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
                 </template>
-                <div v-if="isThinking && streamingText" class="msg-row agent">
-                    <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
-                    <div>
-                        <div class="message agent-streaming" v-html="renderMarkdown(streamingText)"></div>
-                    </div>
-                </div>
                 <!-- When thinking but no messages and no streaming text yet, show centered indicator -->
                 <div v-if="isThinking && messages.length === 0 && !streamingText" style="flex:1;display:flex;align-items:center;justify-content:center;">
                     <div style="text-align:center;color:var(--text2);">
@@ -943,7 +949,6 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             </div>
         </div>
     </div>
-    </template>
 </div>
 
 <script src="/static/app.js?v=20"></script>

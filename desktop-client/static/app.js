@@ -40,6 +40,7 @@ const app = createApp({
         const config = ref({ model: 'loading...', provider: '', base_url: '', max_turns: 90 });
         const uploadedFiles = ref([]);
         const streamingText = ref('');
+        const streamingFinalizing = ref(false);
         const showLog = ref(false);
         const serverLogs = ref([]);
         const showSettings = ref(false);
@@ -173,7 +174,7 @@ const app = createApp({
                     m.role === 'assistant' || m.role === 'agent-streaming' ||
                     m.role === 'system'
                 );
-            if (streamingText.value && isThinking.value) {
+            if (streamingText.value && isThinking.value && !streamingFinalizing.value) {
                 msgs.push({
                     role: 'agent-streaming',
                     html: renderMarkdown(streamingText.value),
@@ -382,6 +383,12 @@ const app = createApp({
                     // a visible white flash.
                     const hasStream = streamingText.value.trim();
                     if (hasStream) {
+                        // Hide the transient streaming bubble in the same Vue
+                        // patch that adds the durable message. This prevents
+                        // employee chats from briefly showing raw reply content
+                        // outside the normal bubble, while still avoiding the
+                        // old remove-then-add white flash.
+                        streamingFinalizing.value = true;
                         addMessage('agent', streamingText.value);
                     } else if (finalText && finalText !== '(no response)') {
                         addMessage('agent', finalText);
@@ -390,6 +397,7 @@ const app = createApp({
                     // Defer state cleanup to after Vue renders the new message
                     nextTick(function() {
                         streamingText.value = '';
+                        streamingFinalizing.value = false;
                         isThinking.value = false;
                         scrollToBottom();
                     });
@@ -410,6 +418,7 @@ const app = createApp({
                     nextTick(function() {
                         isThinking.value = false;
                         streamingText.value = '';
+                        streamingFinalizing.value = false;
                     });
                     break;
 
@@ -448,6 +457,7 @@ const app = createApp({
 
             isThinking.value = true;
             streamingText.value = '';
+            streamingFinalizing.value = false;
             ws.send(JSON.stringify({ message: msgText }));
             inputText.value = '';
             uploadedFiles.value = [];
@@ -580,6 +590,7 @@ const app = createApp({
                 Object.keys(sessionMessagesCache).forEach(function(k) { delete sessionMessagesCache[k]; });
                 currentSessionId.value = '';
                 streamingText.value = '';
+                streamingFinalizing.value = false;
                 isThinking.value = false;
                 if (ws) { ws.close(); ws = null; }
                 await newSession();
@@ -963,6 +974,7 @@ const app = createApp({
                         addMessage('user', learnData.message);
                         isThinking.value = true;
                         streamingText.value = '';
+                        streamingFinalizing.value = false;
                         ws.send(JSON.stringify({ message: learnData.message }));
                         scrollToBottom();
                     }
@@ -1009,6 +1021,7 @@ const app = createApp({
                         addMessage('user', data.message);
                         isThinking.value = true;
                         streamingText.value = '';
+                        streamingFinalizing.value = false;
                         ws.send(JSON.stringify({ message: data.message }));
                         scrollToBottom();
                     }
@@ -1146,6 +1159,7 @@ const app = createApp({
             addMessage('user', prompt + '\n' + context);
             isThinking.value = true;
             streamingText.value = '';
+            streamingFinalizing.value = false;
             ws.send(JSON.stringify({ message: prompt + '\n' + context }));
             scrollToBottom();
         }
@@ -1175,6 +1189,7 @@ const app = createApp({
             addMessage('user', prompt);
             isThinking.value = true;
             streamingText.value = '';
+            streamingFinalizing.value = false;
             ws.send(JSON.stringify({ message: prompt }));
             scrollToBottom();
         }
@@ -1357,6 +1372,7 @@ const app = createApp({
                 await fetch('/api/session/' + sid, { method: 'DELETE' });
                 if (sid === currentSessionId.value) {
                     streamingText.value = '';
+                    streamingFinalizing.value = false;
                     isThinking.value = false;
                     currentSessionId.value = '';
                     messages.value = [];
@@ -1414,6 +1430,7 @@ const app = createApp({
 
             currentSessionId.value = sid;
             streamingText.value = '';
+            streamingFinalizing.value = false;
             isThinking.value = false;
             await loadSessionHistory(sid);
             connectWebSocket(sid);
