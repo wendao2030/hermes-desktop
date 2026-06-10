@@ -392,6 +392,10 @@ const app = createApp({
         function handleBackgroundWsMessage(sid, data) {
             if (!data || !data.type) return;
             if (data.type === 'done' || data.type === 'error' || data.type === 'session.updated') {
+                // Invalidate cached messages so next switchSession reloads
+                // fresh history from server (which includes the agent reply
+                // that just completed in the background).
+                delete sessionMessagesCache[sid];
                 loadSessions();
                 if (data.type === 'session.updated' && activeWsSession !== sid) {
                     closeSessionSocket(sid);
