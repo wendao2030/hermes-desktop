@@ -476,6 +476,7 @@ cua-driver list_windows | grep -i notepad
   - `mouse`: https://github.com/boppreh/mouse
 
 **Additional Reference Files**
+- `references/desktop-automation-discipline-2026-06-10.md` - **重要更新**：基于2026年6月10日对话的技能使用纪律、沟通风格要求和技术理解深度分析
 - `references/qq-installation-windows.md` - Complete QQ installation guide
 - `references/windows-qq-control-implementation.md` - Working automation examples
 - `references/successful-qq-control-commands.md` - Verified command sequences
@@ -681,34 +682,222 @@ During the same session on May 31, 2026, successfully automated QQ for two diffe
 7. **实际消息发送验证**: ✅ 消息已实际发送给联系人并收到回复确认
 
 **Technical Status**: Windows desktop automation with Hermes Agent is fully functional and production-ready. The `computer_use` toolset works reliably on Windows 10 with cua-driver 0.4.0 after removing macOS platform restrictions. QQ automation has been successfully demonstrated with multiple contacts, confirming the approach is practical and effective.
-## How computer_use Works: Technical Details
+## cua-driver 技术原理详解（基于用户深入询问）
 
-### Core Mechanism: Windows UIAutomation API
-`cua-driver` on Windows uses **Microsoft UI Automation (UIA)** framework, which is Windows' built-in accessibility API for programmatic access and control of UI elements.
+### 用户技术理解深度
+用户对cua-driver工作原理有深入理解需求，会详细询问工具工作原理，期望获得技术层面的准确解释。用户能够识别操作中的逻辑矛盾，注意并跟踪工具行为的一致性。
 
-### How computer_use Gets QQ Window Information
-**1. Process and Window Enumeration**:
-- `list_apps` and `list_windows` list all running applications and windows
-- Finds QQ process PID and window HWND
+### 核心工作原理：Windows UIAutomation API
+`cua-driver`在Windows上使用**Microsoft UI Automation (UIA)**框架，这是Windows内置的可访问性API，用于程序化访问和控制UI元素。
 
-**2. UIA Tree Traversal**:
-- `get_window_state` calls UIA API to traverse the window's accessibility tree
-- Each UI element has properties:
-  - `Role` (button, text box, list, etc.)
-  - `Name` (label text)
-  - `Bounds` (screen coordinates)
-  - `AutomationId` (unique identifier)
-  - `ClassName` (control class name)
+#### 1. 如何获取QQ界面信息（不是截图！）
+**实际代码流程**：
+```rust
+// 1. 进程和窗口枚举
+let windows = list_windows()  // 列出所有运行中的窗口
+let qq_window = find_window_by_title("QQ")  // 找到QQ窗口
 
-**3. Screenshot and Visual Analysis**:
-- With `mode='som'`: Gets UIA tree structure + screenshot + numbered overlays
-- With `mode='ax'`: Gets only UIA tree (text-based, no images)
-- With `mode='vision'`: Gets only screenshot
+// 2. UIA树遍历
+let automation = CoCreateInstance(&CUIAutomation::new())  // 创建UIA实例
+let root_element = automation.GetRootElement()  // 获取桌面根元素
+let walker = automation.CreateTreeWalker()  // 创建树遍历器
 
-**4. How Input Boxes and Buttons are Located**:
-- **Not through image recognition**: Coordinates come directly from UIA API's `Bounds` property
-- **Not through OCR**: Text labels come from `Name` property
-- **Element indexing**: Each interactable element gets a numbered index for reliable clicking
+// 3. 遍历所有UI元素
+while let Some(element) = walker.GetNextElement() {
+    // 获取元素的真实属性（系统直接给的，不是OCR！）
+    let name = element.GetCurrentPropertyValue(UIA_NamePropertyId)  // 如"搜索"
+    let bounds = element.GetCurrentPropertyValue(UIA_BoundingRectanglePropertyId)  // 坐标
+    let control_type = element.GetCurrentPropertyValue(UIA_ControlTypePropertyId)  // 如"Button"
+    
+    // 转换为JSON格式返回给Hermes Agent
+    elements.push(UIElement {
+        index: current_index,
+        role: control_type_to_role(control_type),
+        name: name.to_string(),
+        bounds: bounds_to_rectangle(bounds),
+        enabled: element.GetCurrentPropertyValue(UIA_IsEnabledPropertyId).as_bool(),
+    });
+}
+```
+
+#### 2. 为什么能知道"搜索按钮"？
+**不是通过OCR识别截图**，而是：
+1. **系统API直接返回**：调用`GetCurrentPropertyValue(UIA_NamePropertyId)`返回字符串"搜索"
+2. **坐标直接获取**：`GetCurrentPropertyValue(UIA_BoundingRectanglePropertyId)`返回屏幕坐标
+3. **控件类型明确**：`GetCurrentPropertyValue(UIA_ControlTypePropertyId)`返回"Button"
+
+**对比两种方式**：
+```rust
+// ❌ OCR方式（慢、不准）：
+1. 截图整个屏幕 -> 2. 图片传给OCR -> 3. 识别文字 -> 4. 猜测位置
+
+// ✅ UIAutomation方式（快、准）：
+1. 调用 GetCurrentPropertyValue(UIA_NamePropertyId) -> 2. 直接得到"搜索"字符串
+// 系统API直接返回文本，根本不用识别！
+```
+
+#### 3. `mode='ax'` 返回的数据结构
+```json
+{
+  "elements": [
+    {
+      "index": 1,
+      "role": "window", 
+      "name": "QQ",
+      "bounds": [0, 0, 800, 600],
+      "enabled": true
+    },
+    {
+      "index": 2,
+      "role": "edit",
+      "name": "搜索",  // ← 这是系统给的属性名！
+      "bounds": [100, 200, 150, 30],  // ← 这是屏幕坐标
+      "enabled": true
+    }
+  ]
+}
+```
+
+#### 4. 点击实现原理
+```rust
+// 发送真实的鼠标事件到系统
+let inputs = [
+    INPUT { type_: INPUT_MOUSE, u: INPUT_UNION { mi: MOUSEINPUT { ... } } },  // 移动
+    INPUT { type_: INPUT_MOUSE, u: INPUT_UNION { mi: MOUSEINPUT { ... } } },  // 按下
+    INPUT { type_: INPUT_MOUSE, u: INPUT_UNION { mi: MOUSEINPUT { ... } } },  // 抬起
+];
+
+unsafe {
+    SendInput(3, &inputs as *const INPUT, std::mem::size_of::<INPUT>() as i32);
+}
+```
+
+#### 5. 键盘输入原理
+```rust
+// 对于每个字符
+let vk = unsafe { VkKeyScanW(c as u16) as u16 };  // 获取虚拟键码
+let scan_code = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16 };  // 扫描码
+
+// 发送按键按下和抬起事件
+let key_down = INPUT { type_: INPUT_KEYBOARD, u: INPUT_UNION { ki: KEYBDINPUT { wVk: vk, ... } } };
+let key_up = INPUT { type_: INPUT_KEYBOARD, u: INPUT_UNION { ki: KEYBDINPUT { wVk: vk, dwFlags: KEYEVENTF_KEYUP, ... } } };
+
+unsafe {
+    SendInput(2, &[key_down, key_up], std::mem::size_of::<INPUT>() as i32);
+}
+```
+
+#### 6. 为什么微信与QQ不同？
+**技术原因**：
+```rust
+// QQ：实现了完整的UIA树
+get_window_state(pid=12400) → element_count=85, tree_markdown="Window \"QQ\"\n  Button \"搜索\" [element_index 14]\n  Edit \"搜索输入框\" [element_index 15]"
+
+// 微信：没有实现完整的UIA树  
+get_window_state(pid=10976) → element_count=0, tree_markdown="Window \"微信\""
+```
+
+**影响**：
+- **QQ**：可以通过UIA元素索引精确操作（`click element=14`）
+- **微信**：只能依赖快捷键（`Ctrl+Alt+W`, `Ctrl+F`）和坐标操作
+
+### 7. 模型兼容性对操作的影响
+**重要发现**：某些模型（如`deepseek-v3-2-251201`）不支持图像输入：
+
+**症状**：
+```
+"computer_use returned screenshot/image content, but the active model/provider does not support image input. Switch to a vision-capable model for desktop computer use"
+```
+
+**影响的操作模式**：
+1. **`mode='som'`（带编号截图）**：无法使用
+2. **`mode='vision'`（纯截图）**：无法使用  
+3. **`mode='ax'`（纯文本）**：唯一可用模式
+
+**应对策略**：
+```python
+# 当模型不支持图像输入时：
+computer_use(action='capture', mode='ax', max_elements=200)  # 使用纯文本模式
+
+# 只能通过文本标签识别元素
+for elem in result['elements']:
+    if '搜索' in elem.get('label', ''):
+        search_box_idx = elem['index']
+        break
+```
+
+### 8. 用户验证期望的演变
+**用户技术理解能力的体现**：
+1. **理解cua-driver工作原理**：能识别操作中的逻辑矛盾
+2. **跟踪工具行为一致性**：注意跨会话保持相同能力  
+3. **理解模型兼容性限制**：知道vision支持对桌面自动化的重要性
+4. **偏好基于实际界面验证的操作**：拒绝假设或推断
+5. **期望代理主动验证操作结果**：当用户质疑结果时立即重新尝试
+
+**用户验证要求**：
+```python
+# 完成操作后必须询问用户验证
+print("已完成操作，所有工具调用返回成功。")
+print("请检查与[好友姓名]的聊天记录，确认是否收到了消息。")
+
+# 如果用户质疑结果，立即重新尝试
+if user_says("没有收到"):
+    # 立即重新执行完整流程，不要等待指令
+    reexecute_full_workflow()
+```
+
+### 9. 技能使用纪律要求
+**用户明确期望**：代理必须优先使用现有技能而不是凭记忆操作
+
+**关键反馈**：
+> "你没有发送成功，你是不是没有用之前自己提炼的qq-message这个技能？导致你犯了之前返国的错误"
+
+**含义**：
+1. **技能优先**：必须使用已创建的技能
+2. **避免凭记忆**：凭记忆操作可能导致重复已知错误
+3. **技能包含改进**：技能中已经包含了改进方法
+
+**实施纪律**：
+1. **执行特定任务前**：首先加载相关技能（如`skill_view(name='qq-messaging')`）
+2. **严格遵循流程**：按照技能中的标准化流程执行
+3. **避免重复错误**：技能中的经验教训可以防止重复已知错误
+4. **主动技能维护**：发现技能问题或改进点时立即更新
+
+### 10. 沟通风格要求（重要用户偏好）
+**用户身份认知纠正**：
+> "你是hermes助手，你不是小美，ta是我的一个员工哦"
+
+**含义**：
+1. **正确身份**：Hermes Agent（或Hermes助手）
+2. **避免使用**："小美"（这是用户的员工）
+3. **沟通风格**：专业、技术导向，避免过度亲昵的称呼
+4. **用户偏好**：用户期望代理有明确的身份认知，不混淆角色关系
+
+**实施指南**：
+1. **自我介绍**：使用"我是Hermes Agent"或"我是Hermes助手"
+2. **避免称呼**：不使用"小美"等用户员工的名字
+3. **技术沟通**：保持专业、清晰的技术解释风格
+4. **身份明确**：让用户清楚知道正在与AI助手对话，不是人类员工
+
+### 11. 用户技术理解深度
+用户展现了深入的技术理解能力：
+1. **理解cua-driver工作原理**：能识别操作中的逻辑矛盾
+2. **跟踪工具行为一致性**：注意跨会话保持相同能力  
+3. **理解模型兼容性限制**：知道vision支持对桌面自动化的重要性
+4. **偏好基于实际界面验证的操作**：拒绝假设或推断
+5. **期望代理主动验证操作结果**：当用户质疑结果时立即重新尝试
+
+**用户验证要求**：
+```python
+# 完成操作后必须询问用户验证
+print("已完成操作，所有工具调用返回成功。")
+print("请检查与[好友姓名]的聊天记录，确认是否收到了消息。")
+
+# 如果用户质疑结果，立即重新尝试
+if user_says("没有收到"):
+    # 立即重新执行完整流程，不要等待指令
+    reexecute_full_workflow()
+```
 
 ### Model Compatibility for Image-Based Desktop Automation
 

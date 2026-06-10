@@ -521,14 +521,6 @@ def init_agent(
     if agent.verbose_logging:
         setup_verbose_logging()
         _ra().logger.info("Verbose logging enabled (third-party library logs suppressed)")
-
-    # Enhanced: log agent initialization summary
-    _ra().logger.info(
-        "Agent initialized: model=%s provider=%s session=%s platform=%s verbose=%s quiet=%s max_iterations=%d tools=%d",
-        agent.model, agent.provider or "unknown", agent.session_id or "none",
-        agent.platform or "unknown", agent.verbose_logging, agent.quiet_mode,
-        agent.max_iterations, len(agent.tools) if agent.tools else 0,
-    )
     elif agent.quiet_mode:
         # In quiet mode (CLI default), keep console output clean —
         # but DO NOT raise per-logger levels. Doing so prevents the

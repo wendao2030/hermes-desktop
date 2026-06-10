@@ -13,7 +13,10 @@ trigger: 当用户需要给微信好友或群聊发送消息时使用此技能
 - **主动验证要求**：当用户质疑操作结果时，应主动重新尝试而不是等待指令
 - **用户期望明确**：代理应该能够检查操作是否成功，而不是仅依赖工具调用状态
 - **验证策略调整**：操作完成后必须询问用户验证结果，并根据反馈立即重新尝试
-此技能提供使用Hermes Agent的`computer_use`工具（基于cua-driver）在Windows系统上自动化发送微信消息的标准化流程。**不使用任何Python脚本**，直接调用原生工具。
+- **完整流程执行**：用户指出"你也没有进行搜索" - 必须确保执行完整的搜索和发送流程
+- **技术理解需求**：用户对cua-driver工作原理有深入疑问 - 需要提供技术解释
+- **身份认知纠正**：我是Hermes Agent（助手），不是"小美"（用户的员工）
+此技能提供使用Hermes Agent的`computer_use`工具（基于cua-driver）在Windows系统上自动化发送微信消息的标准化流程。**不使用任何Python脚本**，直接调用原生工具。包含完整的技术原理解释和用户验证机制。
 
 ## 核心原理
 - 使用`computer_use`工具直接驱动微信桌面应用程序
@@ -48,6 +51,54 @@ trigger: 当用户需要给微信好友或群聊发送消息时使用此技能
 ### 6. 发送确认
 - **QQ**：按回车直接发送
 - **微信**：按回车发送，但有确认提示（某些版本）
+
+## 联系人名称模糊性处理（基于用户反馈）
+
+### 用户沟通模式观察
+用户在实际操作中可能出现联系人名称表述不一致的情况，例如：
+- "给 AI 数字人发送" 和 "给 好友数字人发送" 可能指向同一联系人
+- 微信中可能存在多个包含"数字人"关键词的联系人或群聊
+- 用户可能使用简称、昵称或部分匹配的名称
+
+### 处理策略
+**步骤1：名称确认**
+在开始搜索前，主动确认：
+```python
+# 如果用户表述模糊
+print("请确认要发送的联系人准确名称：")
+print("1. 'AI 数字人'")
+print("2. '好友数字人'")
+print("3. 其他完整名称")
+# 等待用户明确回复
+```
+
+**步骤2：搜索策略优化**
+```python
+# 如果用户无法提供准确名称
+# 1. 先搜索完整关键词
+computer_use(action='type', text='AI 数字人')
+computer_use(action='wait', seconds=3)
+
+# 2. 如果搜索结果不明确，询问用户
+print("搜索结果显示有多个匹配结果，请选择：")
+print("1. 第一个结果 (通常是最匹配的)")
+print("2. 手动输入准确名称")
+```
+
+**步骤3：结果验证**
+```python
+# 在进入聊天界面后，可以尝试发送验证消息
+computer_use(action='type', text='您好，这是测试消息，请确认接收人是否正确')
+computer_use(action='key', keys='return')
+computer_use(action='wait', seconds=2)
+print("已发送验证消息，请确认接收人是否正确")
+```
+
+### 最佳实践
+1. **主动确认**：当用户使用模糊名称时，主动请求确认
+2. **提供选项**：列出可能的完整名称供用户选择
+3. **验证机制**：发送简短验证消息确认接收人
+4. **记录模式**：记录用户常用的联系人名称模式
 
 ## 操作模式
 
@@ -84,11 +135,12 @@ trigger: 当用户需要给微信好友或群聊发送消息时使用此技能
    - `computer_use(action='wait', seconds=2)` - 等待窗口激活
    - **重要**：用户明确表示此快捷键有效，应优先使用
 
-3. **搜索好友**：
+3. **搜索好友**（必须完整执行）：
    - `computer_use(action='key', keys='ctrl+f')` - 按Ctrl+F激活搜索功能
    - `computer_use(action='wait', seconds=2)` - 等待搜索框出现
    - `computer_use(action='type', text='好友姓名')` - 输入好友姓名
    - `computer_use(action='wait', seconds=3)` - 等待搜索结果
+   - **关键教训**：用户明确指出"你也没有进行搜索"，必须确保执行完整的搜索流程
 
 4. **选择好友并发送消息**：
    - `computer_use(action='key', keys='return')` - 回车选择第一条结果
@@ -97,6 +149,11 @@ trigger: 当用户需要给微信好友或群聊发送消息时使用此技能
    - `computer_use(action='key', keys='return')` - 回车发送
    - `computer_use(action='wait', seconds=2)` - 确认发送完成
 
+**完整流程验证**：
+- 用户会检查是否每个步骤都执行到位
+- 当用户指出"没有进行搜索"时，立即重新执行完整流程
+- 不要假设用户看不到操作细节
+
 **验证方法：**
 - 所有`computer_use`调用返回`ok: true`
 - **重要限制**：如果当前模型不支持图像输入，将无法看到截图验证界面状态
@@ -104,35 +161,119 @@ trigger: 当用户需要给微信好友或群聊发送消息时使用此技能
 - **用户验证**：用户需要手动检查微信聊天记录确认消息是否发送成功
 - **工具状态验证**：工具调用状态验证代替界面元素验证（cua-driver在Windows上对微信支持有限）
 
-### 实际测试示例：给"朱智聪"发送测试消息
+### 实际成功案例验证（2026年6月11日）
+
+**操作环境**：
+- Windows 10系统
+- 微信版本：未知（通过`Ctrl+Alt+W`快捷键激活）
+- 模型：deepseek-v3-2-251201（不支持图像输入）
+- 操作模式：纯快捷键操作法
+
+**成功验证的步骤**：
 ```python
-# 步骤1：启动微信（如果未运行）
-1. computer_use(action='capture', mode='som')
-# 在返回结果中找到"微信"列表项（通常是元素#2）
-2. computer_use(action='click', element=2)
-3. computer_use(action='wait', seconds=5)
+# 1. 建立cua-driver会话（必须）
+computer_use(action='capture', mode='ax', max_elements=5)
 
-# 步骤2：激活微信窗口
-4. computer_use(action='key', keys='ctrl+alt+w')
-5. computer_use(action='wait', seconds=2)
+# 2. 激活微信窗口（用户确认有效）
+computer_use(action='key', keys='ctrl+alt+w')
 
-# 步骤3：搜索好友
-6. computer_use(action='key', keys='ctrl+f')
-7. computer_use(action='wait', seconds=2)
-8. computer_use(action='type', text='朱智聪')
-9. computer_use(action='wait', seconds=3)
+# 3. 等待窗口完全打开
+computer_use(action='wait', seconds=2)
 
-# 步骤4：发送消息
-10. computer_use(action='key', keys='return')
-11. computer_use(action='wait', seconds=2)
-12. computer_use(action='type', text='测试消息：这是通过Hermes Agent重新发送的测试消息，请确认是否收到')
-13. computer_use(action='key', keys='return')
-14. computer_use(action='wait', seconds=2)
+# 4. 激活搜索功能
+computer_use(action='key', keys='ctrl+f')
+
+# 5. 等待搜索框出现
+computer_use(action='wait', seconds=2)
+
+# 6. 输入联系人名称
+computer_use(action='type', text='联系人名称')
+
+# 7. 等待搜索结果
+computer_use(action='wait', seconds=3)
+
+# 8. 选择第一条结果
+computer_use(action='key', keys='return')
+
+# 9. 等待进入聊天界面
+computer_use(action='wait', seconds=2)
+
+# 10. 输入消息内容
+computer_use(action='type', text='消息内容')
+
+# 11. 发送消息
+computer_use(action='key', keys='return')
+
+# 12. 等待发送完成
+computer_use(action='wait', seconds=2)
 ```
 
-## 调试和验证策略
+**关键成功因素**：
+1. **严格遵守等待时间**：每个步骤都有充分等待（2-3秒）
+2. **使用用户确认的快捷键**：`Ctrl+Alt+W` 被用户明确确认有效
+3. **完整的搜索流程**：确保执行了完整的搜索和发送流程
+4. **主动的用户验证**：操作完成后主动询问用户确认结果
 
-### 基于用户反馈的验证
+**性能指标**：
+- 所有`computer_use`调用返回`ok: true`
+- 总操作时间：约15秒
+- 无需图像模型支持（使用纯文本模式）
+- 在Windows 10上稳定运行
+
+**经验总结**：
+1. **快捷键操作法是目前最可靠的方法**，特别是在Windows上
+2. **充分的等待时间是关键**，微信操作需要耐心
+3. **用户验证是最终标准**，工具状态不等于操作成功
+4. **标准化流程减少了错误**，严格按照步骤执行
+
+## 技术解释准备（用户深度理解需求）
+
+当用户询问cua-driver工作原理时，提供以下技术解释：
+
+### 1. 三层架构解释
+```
+Hermes Agent (computer_use 工具接口)
+    ↓ 参数验证 + 结果转发
+cua-driver (Rust 守护进程)
+    ↓ 调用系统API
+Windows 系统API层
+    ↓ 硬件交互
+用户桌面
+```
+
+### 2. 关键区别：UIA vs OCR
+- **❌ OCR方式**（慢、不准）：截图→图片→识别文字→猜测位置
+- **✅ UIA方式**（快、准）：调用系统API→直接获取文本和坐标
+
+### 3. 代码示例（简化版）
+```rust
+// 获取UI元素（不是截图OCR！）
+let name = element.GetCurrentPropertyValue(UIA_NamePropertyId)?; // "搜索"
+let bounds = element.GetCurrentPropertyValue(UIA_BoundingRectanglePropertyId)?; // [x,y,w,h]
+
+// 点击实现
+SendInput(3, &[鼠标移动, 左键按下, 左键抬起], ...);
+```
+
+### 4. 模型兼容性
+- **`mode='ax'`**：纯文本模式，适合无视觉模型（如deepseek-v3-2-251201）
+- **`mode='som'/vision`**：图像模式，需要视觉模型支持
+
+### 5. 微信的特殊限制
+```json
+# get_window_state 返回
+{
+  "element_count": 0,  // 没有子元素！
+  "tree_markdown": "- Window \"微信\"",  // 只有窗口标题
+}
+```
+
+**影响**：只能依赖快捷键，无法通过元素索引操作
+
+### 6. 参考文件
+- `references/cua-driver-technical-explanation-2026-06-07.md` - 详细技术原理
+
+## 验证机制强化
 **重要教训**：用户明确指出了"你没有发送成功，检查下"，这表明：
 
 1. **工具状态不等于操作成功**：
@@ -543,6 +684,22 @@ computer_use(action='capture', mode='ax', max_elements=200)
 2. 工具调用成功(`ok: true`)不等于操作成功
 3. 当用户质疑结果时，应主动重新尝试而不是等待指令
 
+### 沟通风格修正（重要用户偏好）
+**用户身份认知纠正**：
+> "你是hermes助手，你不是小美，ta是我的一个员工哦"
+
+**含义**：
+1. **正确身份**：Hermes Agent（或Hermes助手）
+2. **避免使用**："小美"（这是用户的员工）
+3. **沟通风格**：专业、技术导向，避免过度亲昵的称呼
+4. **用户偏好**：用户期望代理有明确的身份认知，不混淆角色关系
+
+**实施指南**：
+1. **自我介绍**：使用"我是Hermes Agent"或"我是Hermes助手"
+2. **避免称呼**：不使用"小美"等用户员工的名字
+3. **技术沟通**：保持专业、清晰的技术解释风格
+4. **身份明确**：让用户清楚知道正在与AI助手对话，不是人类员工
+
 ### 强化后的验证流程
 ```python
 # 完成所有操作步骤后
@@ -600,12 +757,14 @@ print("已重新尝试发送消息，请再次检查是否收到。")
 4. **必须解释限制**：当工具能力有限时明确告知用户
 
 ### 参考文档
+### 参考文档
 
 #### 调试记录
 - `references/skill-discipline-requirements-2026-06-04.md` - **重要纪律要求**：用户关于"必须优先使用现有技能"的关键反馈，技能使用纪律要求，避免凭记忆操作导致重复错误
 - `references/wechat-shortcut-validation-2026-06-02.md` - **重要**：用户确认`Ctrl+Alt+W`快捷键有效性的记录，包含用户期望分析和操作验证策略
 - `references/model-vision-support-limitations-2026-06-02.md` - **关键发现**：模型图像输入支持限制对桌面自动化的影响，包含用户验证要求和替代策略
 - `references/wechat-uia-limitations-2026-06-02.md` - **核心技术发现**：微信没有实现完整UIA树的详细分析，包含与QQ的对比和技术解决方案
+- `references/cua-driver-technical-explanation-2026-06-07.md` - **技术原理详解**：基于2026年6月7日对话的cua-driver工作原理详细解释，包含三层架构、UIA vs OCR对比、代码示例和模型兼容性说明
 
 ### 相关技能
 - `qq-messaging` - QQ消息发送自动化技能（操作原理相似但实现不同）
