@@ -3285,6 +3285,12 @@ def run_conversation(
             
             # Check for tool calls
             if assistant_message.tool_calls:
+                _tool_names = [tc.function.name for tc in assistant_message.tool_calls]
+                logger.info(
+                    "Processing %d tool call(s): %s",
+                    len(assistant_message.tool_calls),
+                    ", ".join(_tool_names),
+                )
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                 

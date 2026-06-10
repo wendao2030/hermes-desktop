@@ -403,19 +403,6 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                     </div>
                 </div>
 
-                <!-- 快速输入 -->
-                <div class="home-input">
-                    <div class="input-row">
-                        <textarea
-                            v-model="inputText"
-                            placeholder="有什么我可以帮你的？"
-                            @keydown="handleKeydown"
-                            rows="1"
-                            ref="inputEl"
-                        ></textarea>
-                        <button @click="sendMessage" :disabled="!inputText.trim()">发送</button>
-                    </div>
-                </div>
 
                 <!-- 我的团队 -->
                 <div class="home-section">
@@ -432,7 +419,19 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                                     <div class="emp-role" style="font-size:11px;color:var(--text2);margin-top:2px;">{{ emp.role || '未设定角色' }}</div>
                                 </div>
                             </div>
-                            <div class="emp-card-desc">{{ emp.work_content || '暂无工作描述' }}</div>
+                            <!-- Dynamic task status instead of static work_content -->
+                            <div class="emp-card-desc">
+                                <template v-if="emp.latest_task">
+                                    <span v-if="emp.latest_task.status === 'running'" style="color:var(--blue);">🔄 执行中：{{ emp.latest_task.title || '任务' }}</span>
+                                    <span v-else-if="emp.latest_task.status === 'done'" style="color:var(--green);">✅ 已完成：{{ emp.latest_task.title || '任务' }}</span>
+                                    <span v-else-if="emp.latest_task.status === 'failed'" style="color:var(--danger);">❌ 失败：{{ emp.latest_task.title || '任务' }}</span>
+                                    <span v-else-if="emp.latest_task.status === 'planning'" style="color:var(--text2);">📋 待确认：{{ emp.latest_task.title || '任务' }}</span>
+                                    <span v-else style="color:var(--text2);">📌 {{ emp.latest_task.title || '任务' }}</span>
+                                </template>
+                                <template v-else>
+                                    {{ emp.work_content || '暂无任务' }}
+                                </template>
+                            </div>
                             <div class="emp-card-actions">
                                 <button class="btn-sm action" @click.stop="chatWithEmployee(emp)">💬 对话</button>
                                 <button class="btn-sm ghost" @click.stop="openEditEmployeeDialog(emp)" style="font-size:11px;padding:4px 8px;">✏ 编辑</button>
@@ -591,9 +590,26 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                 </div>
                 <div class="emp-actions">
                     <button class="btn-emp-trigger" @click="triggerEmployeeWithConfirm()">▶ 立即执行</button>
+                    <button class="btn-emp-workflow" v-if="lastAgentMessageIdx >= 0" @click="openWorkflowCaptureDialog('experience')">沉淀做法</button>
                     <button class="btn-emp-workflow" @click="openWorkflowDesigner(currentEmployee)">📋 工作流</button>
                     <button class="btn-emp-edit" @click="openEditEmployeeDialog(currentEmployee)">✏️ 编辑</button>
                 </div>
+            </div>
+            <div v-if="activeEmployeeTask || employeeTasks.length" style="display:flex;align-items:center;gap:10px;padding:10px 20px;border-bottom:1px solid var(--border);background:rgba(250,245,238,0.45);font-size:12px;color:var(--text2);flex-wrap:wrap;">
+                <template v-if="activeEmployeeTask">
+                    <span style="font-weight:600;color:var(--text);">当前任务：{{ activeEmployeeTask.workflow_name || activeEmployeeTask.title }}</span>
+                    <span>{{ employeeTaskStatusText(activeEmployeeTask.status) }}</span>
+                    <button v-if="activeEmployeeTask.status === 'planning' && lastAgentMessageIdx >= 0 && !isThinking" class="btn-sm primary" @click="confirmActiveEmployeeTask" :disabled="isConfirmingEmployeeTask">{{ isConfirmingEmployeeTask ? '确认中...' : '确认计划，开始干活' }}</button>
+                    <button v-if="activeEmployeeTask.status === 'running' && lastAgentMessageIdx >= 0 && !isThinking" class="btn-sm ghost" @click="openWorkflowCaptureDialog('experience')">满意，记下来</button>
+                </template>
+                <template v-if="employeeTasks.length">
+                    <span style="margin-left:auto;">最近：</span>
+                    <span v-for="task in employeeTasks.slice(0, 3)" :key="task.id" style="padding:3px 7px;border:1px solid var(--border);border-radius:999px;background:#fff;">{{ task.workflow_name || task.title }} · {{ employeeTaskStatusText(task.status) }}</span>
+                </template>
+            </div>
+            <div v-if="employeeWorkflows.length" style="display:flex;align-items:center;gap:8px;padding:10px 20px;border-bottom:1px solid var(--border);background:#fff;font-size:12px;flex-wrap:wrap;">
+                <span style="color:var(--text2);">常用任务</span>
+                <button v-for="wf in employeeWorkflows.filter(item => item.enabled !== false).slice(0, 5)" :key="'quick-'+wf.id" class="btn-sm ghost" @click="prepareEmployeeWorkflow(wf.id)" style="padding:5px 9px;">{{ wf.name || '未命名任务' }}</button>
             </div>
             <div class="chat-area team-chat-area" ref="chatArea" style="flex:1;overflow-y:auto;padding:16px 20px;display:flex;flex-direction:column;gap:14px;min-height:200px;">
                 <!-- Welcome: only when truly idle -->
@@ -604,7 +620,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                         <small style="color:var(--text2)">输入消息开始对话</small>
                     </div>
                 </div>
-                <template v-for="(msg, idx) in messages" :key="'emp-'+idx">
+                <template v-for="(msg, idx) in displayedMessages" :key="'emp-'+idx">
                     <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
                         <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
                         <div>
@@ -613,12 +629,6 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                     </div>
                     <div v-else class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
                 </template>
-                <div v-if="isThinking && streamingText" class="msg-row agent">
-                    <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
-                    <div>
-                        <div class="message agent-streaming" v-html="renderMarkdown(streamingText)"></div>
-                    </div>
-                </div>
                 <!-- When thinking but no messages and no streaming text yet, show centered indicator -->
                 <div v-if="isThinking && messages.length === 0 && !streamingText" style="flex:1;display:flex;align-items:center;justify-content:center;">
                     <div style="text-align:center;color:var(--text2);">
@@ -628,13 +638,21 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                     </div>
                 </div>
                 <!-- thinking-bar always visible when isThinking, so user sees activity -->
-                <div v-if="isThinking" class="thinking-bar" style="flex-shrink:0;">
+                <div v-if="isThinking" class="thinking-bar" style="flex-shrink:0;" @click="showToolDetails = !showToolDetails">
                     <div class="thinking-left">
                         <span class="thinking-dot"></span>
                         <span class="thinking-dot"></span>
                         <span class="thinking-dot"></span>
                         <span class="thinking-text">{{ currentEmployee ? currentEmployee.name + ' 正在思考中...' : '正在处理中' }}</span>
                     </div>
+                    <div class="thinking-right">
+                        <span v-if="toolMessages.length">查看处理过程 ({{ toolMessages.length }} 条)</span>
+                        <span v-if="!toolMessages.length">查看处理过程</span>
+                        <svg width="10" height="6" viewBox="0 0 12 8" :style="{transform: showToolDetails ? 'rotate(180deg)' : ''}" style="transition:transform .2s;opacity:.4;"><path d="M1 1L6 6L11 1" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    </div>
+                </div>
+                <div v-if="isThinking && showToolDetails && toolMessages.length > 0" class="thinking-details">
+                    <div v-for="(t, ti) in toolMessages" :key="'emp-tool-'+ti" class="thinking-detail-item">{{ t }}</div>
                 </div>
             </div>
 
@@ -708,7 +726,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                         <div v-for="sk in marketResults" :key="sk.identifier" class="card market-card" @click="viewMarketSkillDetail(sk)">
                             <div class="card-header">
                                 <span class="card-name">{{ sk.name }}</span>
-                                <button v-if="!isSkillInstalled(sk.name)" class="install-btn" @click.stop="installSkill(sk)">获取</button>
+                                <button v-if="!isSkillInstalled(sk.name)" class="install-btn" @click.stop="installSkill(sk, $event)">获取</button>
                                 <span v-else class="badge green">已安装</span>
                             </div>
                             <div class="card-desc">{{ sk.description || '暂无描述' }}</div>
@@ -915,11 +933,33 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             </div>
             <div style="display:flex;flex-direction:column;gap:12px;">
                 <div>
-                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作步骤（每行一个步骤）</label>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">常用任务</label>
+                    <div style="display:flex;gap:8px;">
+                        <select v-model="activeWorkflowId" @change="selectWorkflow(activeWorkflowId)" style="flex:1;padding:9px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:#fff;">
+                            <option v-for="wf in employeeWorkflows" :key="wf.id" :value="wf.id">{{ wf.name || '未命名任务' }}</option>
+                        </select>
+                        <button class="btn-sm ghost" @click="addWorkflowDraft">新增</button>
+                    </div>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">任务名称</label>
+                    <input v-model="workflowName" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="例如：制作海报、处理图片、找参考图">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">适用场景</label>
+                    <textarea v-model="workflowDescription" rows="2" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;" placeholder="这类任务通常在什么情况下使用"></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">开工前先问清楚</label>
+                    <textarea v-model="workflowQuestions" rows="3" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;" placeholder="例如：用途、尺寸、风格、素材、输出格式"></textarea>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">参考做法</label>
                     <textarea v-model="workflowSteps" rows="8" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;font-family:var(--mono);" placeholder="1. 步骤名称：操作描述&#10;2. 步骤名称：操作描述&#10;..."></textarea>
                 </div>
                 <div style="display:flex;gap:8px;align-items:center;">
                     <button class="btn-sm ghost" @click="generateWorkflowWithAI" style="flex:1;">🤖 AI 自动生成步骤</button>
+                    <button class="btn-sm ghost" @click="deleteWorkflowSettings">删除</button>
                 </div>
             </div>
             <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
@@ -933,19 +973,61 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
     <div v-if="showWorkflowConfirm" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:320;display:flex;align-items:center;justify-content:center;" @click.self="cancelTrigger">
         <div style="background:#fff;border-radius:12px;padding:24px;width:440px;max-height:70vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-                <span style="font-size:16px;font-weight:600;">确认执行任务</span>
+                <span style="font-size:16px;font-weight:600;">准备让员工开工</span>
                 <button style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);" @click="cancelTrigger">&times;</button>
+            </div>
+            <div v-if="employeeWorkflows.length" style="margin-bottom:12px;">
+                <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">这次让 TA 做</label>
+                <select v-model="activeWorkflowId" @change="selectWorkflow(activeWorkflowId)" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:#fff;">
+                    <option v-for="wf in employeeWorkflows" :key="wf.id" :value="wf.id">{{ wf.name || '未命名任务' }}</option>
+                </select>
+            </div>
+            <div style="margin-bottom:12px;">
+                <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">这次具体想让 TA 做什么</label>
+                <textarea v-model="employeeTaskBrief" rows="3" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;" placeholder="简单说一句就行，例如：帮我做一张小红书封面，主题是 AI 员工系统"></textarea>
             </div>
             <div style="font-size:13px;line-height:1.8;white-space:pre-wrap;color:var(--text);padding:12px;background:rgba(250,245,238,0.5);border-radius:8px;" v-html="renderMarkdown(workflowSummary)"></div>
             <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
                 <button class="btn-sm ghost" @click="cancelTrigger">取消</button>
-                <button class="btn-sm primary" @click="confirmTrigger">▶ 确认执行</button>
+                <button class="btn-sm primary" @click="confirmTrigger">▶ 让 TA 先出计划</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========== CAPTURE WORKFLOW / EXPERIENCE DIALOG ========== -->
+    <div v-if="showWorkflowCaptureDialog" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:330;display:flex;align-items:center;justify-content:center;" @click.self="closeWorkflowCaptureDialog">
+        <div style="background:#fff;border-radius:12px;padding:24px;width:460px;max-height:75vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                <span style="font-size:16px;font-weight:600;">把这次做法记下来</span>
+                <button style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);" @click="closeWorkflowCaptureDialog">&times;</button>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">这次怎么保存</label>
+                    <select v-model="workflowCaptureMode" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:#fff;">
+                        <option value="experience">只记为经验</option>
+                        <option value="new">保存成新的常用任务</option>
+                        <option value="update">升级当前常用任务</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">给这个做法起个名字</label>
+                    <input v-model="workflowCaptureName" style="width:100%;padding:9px 10px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="例如：小红书科技风封面做法">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">希望员工下次记住什么</label>
+                    <textarea v-model="workflowCaptureNotes" rows="5" style="width:100%;padding:10px 14px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;" placeholder="例如：下次先找参考图，标题要更醒目，风格保持干净一点"></textarea>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+                <button class="btn-sm ghost" @click="closeWorkflowCaptureDialog">先不保存</button>
+                <button class="btn-sm primary" @click="saveWorkflowCapture" :disabled="isCapturingWorkflow">{{ isCapturingWorkflow ? '保存中...' : '保存' }}</button>
             </div>
         </div>
     </div>
     </template>
 </div>
 
-<script src="/static/app.js?v=20"></script>
+<script src="/static/app.js?v=25"></script>
 </body>
 </html>

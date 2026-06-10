@@ -251,6 +251,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
+        # Enhanced: log tool args summary for observability
+        _args_preview = str(function_args)[:120] if function_args else ""
+        if _args_preview:
+            logger.info("tool %s args: %s", function_name, _args_preview)
         results[index] = (function_name, function_args, result, duration, is_error, False)
         # Tear down worker-tid tracking.  Clear any interrupt bit we may
         # have set so the next task scheduled onto this recycled tid
@@ -805,6 +809,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
+        # Enhanced: log tool args summary for observability
+        _seq_args_preview = str(function_args)[:120] if function_args else ""
+        if _seq_args_preview:
+            logger.info("tool %s args: %s", function_name, _seq_args_preview)
 
         # Track file-mutation outcome for the turn-end verifier.  See
         # the concurrent path for the rationale; both paths must feed

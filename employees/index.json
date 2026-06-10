@@ -16,7 +16,86 @@
       "learn_keywords": "",
       "work_mode": "混合模式",
       "created_at": "2026-06-06T23:51:19.718326",
-      "session_id": "20260607_125547_b8d36e72"
+      "session_id": "20260607_125547_b8d36e72",
+      "workflows": [
+        {
+          "id": "wf-default",
+          "name": "日常工作",
+          "description": "设计师",
+          "steps": "",
+          "questions": "开始前先问清楚目标、素材、风格/标准、输出形式和是否需要用户中途确认。",
+          "enabled": true,
+          "is_default": true,
+          "default_inputs": {},
+          "created_at": "2026-06-09T13:01:16.919759",
+          "updated_at": "2026-06-09T13:01:16.919759"
+        },
+        {
+          "name": "常用任务",
+          "description": "",
+          "questions": "开工前先问清楚目标、素材、标准和输出要求。",
+          "steps": "",
+          "id": "wf-d3afec66",
+          "default_inputs": {},
+          "enabled": true,
+          "is_default": false,
+          "created_at": "2026-06-09T14:07:38.897897",
+          "updated_at": "2026-06-09T14:07:38.897897"
+        },
+        {
+          "id": "wf-poster",
+          "name": "制作海报/封面",
+          "description": "需要输出海报、封面、宣传图或社媒体配图时使用。",
+          "questions": "开工前问清楚平台、尺寸、主题、文案、风格、素材和输出版本数。",
+          "steps": "1. 理解用途和受众\n2. 补齐关键文案和素材\n3. 如需先找参考图\n4. 生成 2-3 个设计方向\n5. 给出确认点\n6. 确认后输出成品\n7. 总结用户喜欢的风格",
+          "default_inputs": {},
+          "enabled": true,
+          "is_default": false,
+          "created_at": "2026-06-09T14:25:34.814037",
+          "updated_at": "2026-06-09T14:25:34.814037"
+        },
+        {
+          "id": "wf-image-edit",
+          "name": "处理图片",
+          "description": "需要修图、改尺寸、去背景、增强画质或批量处理时使用。",
+          "questions": "开工前问清楚要处理哪些图、想改成什么效果、输出格式和是否需要保留原图。",
+          "steps": "1. 检查输入图片\n2. 确认处理目标\n3. 先给出处理计划\n4. 用户确认后执行\n5. 输出处理后文件\n6. 记录本次偏好和参数",
+          "default_inputs": {},
+          "enabled": true,
+          "is_default": false,
+          "created_at": "2026-06-09T14:25:34.814037",
+          "updated_at": "2026-06-09T14:25:34.814037"
+        },
+        {
+          "id": "wf-reference-search",
+          "name": "找设计参考",
+          "description": "需要联网找灵感、竞品视觉、图片素材或风格参考时使用。",
+          "questions": "开工前问清楚行业、风格、平台、参考数量和是否需要下载素材。",
+          "steps": "1. 明确搜索方向\n2. 搜索并筛选参考\n3. 整理来源和风格特征\n4. 总结可借鉴的设计点\n5. 把有价值的参考写入知识/经验",
+          "default_inputs": {},
+          "enabled": true,
+          "is_default": false,
+          "created_at": "2026-06-09T14:25:34.814037",
+          "updated_at": "2026-06-09T14:25:34.814037"
+        }
+      ],
+      "max_slots": 5,
+      "workflow_presets_seeded_at": "2026-06-09T14:25:34.814037",
+      "latest_task": {
+        "id": "task-4d2ece2b",
+        "employee_id": "emp-3e664a0c",
+        "title": "请准备这次工作",
+        "workflow_id": "wf-default",
+        "workflow_name": "日常工作",
+        "status": "running",
+        "session_id": "20260607_125547_b8d36e72",
+        "created_at": "2026-06-09T14:37:40.574695",
+        "updated_at": "2026-06-09T14:38:37.692892",
+        "plan_confirmed_at": "2026-06-09T14:38:37.692892",
+        "completed_at": "",
+        "result_summary": "",
+        "user_confirm_note": ""
+      }
     },
     {
       "id": "emp-397b00d5",
@@ -31,7 +110,36 @@
       "notes": "",
       "work_mode": "manual",
       "created_at": "2026-06-07T17:34:25.405941",
-      "session_id": "20260607_173426_0a76c9fa"
+      "session_id": "20260607_173426_0a76c9fa",
+      "workflows": [
+        {
+          "id": "wf-default",
+          "name": "日常工作",
+          "description": "财务专家",
+          "steps": "",
+          "questions": "开始前先问清楚目标、素材、风格/标准、输出形式和是否需要用户中途确认。",
+          "enabled": true,
+          "is_default": true,
+          "default_inputs": {},
+          "created_at": "2026-06-09T13:01:16.919759",
+          "updated_at": "2026-06-09T13:01:16.919759"
+        },
+        {
+          "id": "wf-learning",
+          "name": "学习和积累",
+          "description": "需要让员工围绕某个方向持续学习、总结并积累经验时使用。",
+          "questions": "开工前问清楚学习方向、资料来源、输出形式和多久复盘一次。",
+          "steps": "1. 确认学习目标\n2. 检查已有知识\n3. 阅读或搜索新资料\n4. 总结关键收获\n5. 更新知识库和经验",
+          "default_inputs": {},
+          "enabled": true,
+          "is_default": false,
+          "created_at": "2026-06-09T14:25:34.814037",
+          "updated_at": "2026-06-09T14:25:34.814037"
+        }
+      ],
+      "max_slots": 5,
+      "workflow_presets_seeded_at": "2026-06-09T14:25:34.814037",
+      "latest_task": null
     }
   ]
 }

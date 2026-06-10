@@ -1,0 +1,19 @@
+{
+  "tasks": [
+    {
+      "id": "task-4d2ece2b",
+      "employee_id": "emp-3e664a0c",
+      "title": "请准备这次工作",
+      "workflow_id": "wf-default",
+      "workflow_name": "日常工作",
+      "status": "running",
+      "session_id": "20260607_125547_b8d36e72",
+      "created_at": "2026-06-09T14:37:40.574695",
+      "updated_at": "2026-06-09T14:38:37.692892",
+      "plan_confirmed_at": "2026-06-09T14:38:37.692892",
+      "completed_at": "",
+      "result_summary": "",
+      "user_confirm_note": ""
+    }
+  ]
+}

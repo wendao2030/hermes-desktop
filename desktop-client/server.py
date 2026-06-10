@@ -13,6 +13,7 @@ import asyncio
 import time
 import traceback
 import socket
+import re
 from urllib.parse import urlparse
 from datetime import datetime
 from pathlib import Path
@@ -36,7 +37,7 @@ from utils import is_truthy_value, normalize_proxy_env_vars
 
 # --- FastAPI ---
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -54,6 +55,47 @@ def load_config():
     return load_hermes_config()
 
 app = FastAPI(title="Hermes Desktop Client")
+
+DESKTOP_HOST_VALUES = {"127.0.0.1", "localhost", "::1"}
+SESSION_ID_RE = re.compile(r"^(?:\d{8}_\d{6}_[a-f0-9]{8}|emp-[a-f0-9]{8})$")
+
+
+def _host_without_port(value: str) -> str:
+    h = (value or "").strip()
+    if h.startswith("["):
+        close = h.find("]")
+        return h[1:close].lower() if close >= 0 else h.strip("[]").lower()
+    return (h.rsplit(":", 1)[0] if ":" in h else h).lower()
+
+
+def _is_desktop_host(value: str) -> bool:
+    return _host_without_port(value) in DESKTOP_HOST_VALUES
+
+
+def _origin_is_allowed(value: str) -> bool:
+    if not value:
+        return True
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+    return _is_desktop_host(parsed.netloc)
+
+
+@app.middleware("http")
+async def desktop_boundary_middleware(request: Request, call_next):
+    host = request.headers.get("host", "")
+    if host and not _is_desktop_host(host):
+        return JSONResponse({"detail": "Invalid Host header"}, status_code=400)
+    origin = request.headers.get("origin", "")
+    if origin and not _origin_is_allowed(origin):
+        return JSONResponse({"detail": "Invalid Origin header"}, status_code=403)
+    return await call_next(request)
+
+
+def _ws_request_is_allowed(websocket: WebSocket) -> bool:
+    return _is_desktop_host(websocket.headers.get("host", "")) and _origin_is_allowed(
+        websocket.headers.get("origin", "")
+    )
 
 # --- In-memory server log ---
 server_logs = []
@@ -98,6 +140,270 @@ def _employee_dir(emp_id: str) -> Path:
 def _employee_profile_path(emp_id: str) -> Path:
     return _employee_dir(emp_id) / "profile.md"
 
+def _now_iso() -> str:
+    return datetime.now().isoformat()
+
+def _new_workflow_id() -> str:
+    return "wf-" + uuid.uuid4().hex[:8]
+
+def _normalize_workflow(workflow: dict, *, fallback_name: str = "") -> dict:
+    now = _now_iso()
+    wf = dict(workflow or {})
+    wf["id"] = (wf.get("id") or _new_workflow_id()).strip()
+    wf["name"] = (wf.get("name") or fallback_name or "\u5e38\u7528\u4efb\u52a1").strip()
+    wf["description"] = (wf.get("description") or "").strip()
+    wf["steps"] = (wf.get("steps") or "").strip()
+    wf["questions"] = (wf.get("questions") or "").strip()
+    wf["default_inputs"] = wf.get("default_inputs") if isinstance(wf.get("default_inputs"), dict) else {}
+    wf["enabled"] = bool(wf.get("enabled", True))
+    wf["is_default"] = bool(wf.get("is_default", False))
+    wf["created_at"] = wf.get("created_at") or now
+    wf["updated_at"] = wf.get("updated_at") or now
+    return wf
+
+def _default_workflow_from_employee(emp: dict) -> dict:
+    role = (emp.get("role") or "").strip()
+    work_content = (emp.get("work_content") or "").strip()
+    work_steps = (emp.get("work_steps") or emp.get("steps") or "").strip()
+    description = work_content or role or "\u9002\u5408\u8fd9\u4f4d\u5458\u5de5\u7684\u65e5\u5e38\u5de5\u4f5c\u3002"
+    questions = (
+        "\u5f00\u59cb\u524d\u5148\u95ee\u6e05\u695a\u76ee\u6807\u3001\u7d20\u6750\u3001\u98ce\u683c/\u6807\u51c6\u3001"
+        "\u8f93\u51fa\u5f62\u5f0f\u548c\u662f\u5426\u9700\u8981\u7528\u6237\u4e2d\u9014\u786e\u8ba4\u3002"
+    )
+    return _normalize_workflow({
+        "id": "wf-default",
+        "name": "\u65e5\u5e38\u5de5\u4f5c",
+        "description": description,
+        "steps": work_steps,
+        "questions": questions,
+        "enabled": True,
+        "is_default": True,
+    })
+
+def _preset_workflows_for_employee(emp: dict) -> list[dict]:
+    role_text = " ".join([
+        emp.get("name", ""),
+        emp.get("role", ""),
+        emp.get("work_content", ""),
+        emp.get("goal", ""),
+    ]).lower()
+    presets = [_default_workflow_from_employee(emp)]
+    if any(word in role_text for word in ["\u8bbe\u8ba1", "\u4f5c\u56fe", "\u56fe\u7247", "\u6d77\u62a5", "design", "image", "poster"]):
+        presets.extend([
+            _normalize_workflow({
+                "id": "wf-poster",
+                "name": "\u5236\u4f5c\u6d77\u62a5/\u5c01\u9762",
+                "description": "\u9700\u8981\u8f93\u51fa\u6d77\u62a5\u3001\u5c01\u9762\u3001\u5ba3\u4f20\u56fe\u6216\u793e\u5a92\u4f53\u914d\u56fe\u65f6\u4f7f\u7528\u3002",
+                "questions": "\u5f00\u5de5\u524d\u95ee\u6e05\u695a\u5e73\u53f0\u3001\u5c3a\u5bf8\u3001\u4e3b\u9898\u3001\u6587\u6848\u3001\u98ce\u683c\u3001\u7d20\u6750\u548c\u8f93\u51fa\u7248\u672c\u6570\u3002",
+                "steps": "1. \u7406\u89e3\u7528\u9014\u548c\u53d7\u4f17\n2. \u8865\u9f50\u5173\u952e\u6587\u6848\u548c\u7d20\u6750\n3. \u5982\u9700\u5148\u627e\u53c2\u8003\u56fe\n4. \u751f\u6210 2-3 \u4e2a\u8bbe\u8ba1\u65b9\u5411\n5. \u7ed9\u51fa\u786e\u8ba4\u70b9\n6. \u786e\u8ba4\u540e\u8f93\u51fa\u6210\u54c1\n7. \u603b\u7ed3\u7528\u6237\u559c\u6b22\u7684\u98ce\u683c",
+            }),
+            _normalize_workflow({
+                "id": "wf-image-edit",
+                "name": "\u5904\u7406\u56fe\u7247",
+                "description": "\u9700\u8981\u4fee\u56fe\u3001\u6539\u5c3a\u5bf8\u3001\u53bb\u80cc\u666f\u3001\u589e\u5f3a\u753b\u8d28\u6216\u6279\u91cf\u5904\u7406\u65f6\u4f7f\u7528\u3002",
+                "questions": "\u5f00\u5de5\u524d\u95ee\u6e05\u695a\u8981\u5904\u7406\u54ea\u4e9b\u56fe\u3001\u60f3\u6539\u6210\u4ec0\u4e48\u6548\u679c\u3001\u8f93\u51fa\u683c\u5f0f\u548c\u662f\u5426\u9700\u8981\u4fdd\u7559\u539f\u56fe\u3002",
+                "steps": "1. \u68c0\u67e5\u8f93\u5165\u56fe\u7247\n2. \u786e\u8ba4\u5904\u7406\u76ee\u6807\n3. \u5148\u7ed9\u51fa\u5904\u7406\u8ba1\u5212\n4. \u7528\u6237\u786e\u8ba4\u540e\u6267\u884c\n5. \u8f93\u51fa\u5904\u7406\u540e\u6587\u4ef6\n6. \u8bb0\u5f55\u672c\u6b21\u504f\u597d\u548c\u53c2\u6570",
+            }),
+            _normalize_workflow({
+                "id": "wf-reference-search",
+                "name": "\u627e\u8bbe\u8ba1\u53c2\u8003",
+                "description": "\u9700\u8981\u8054\u7f51\u627e\u7075\u611f\u3001\u7ade\u54c1\u89c6\u89c9\u3001\u56fe\u7247\u7d20\u6750\u6216\u98ce\u683c\u53c2\u8003\u65f6\u4f7f\u7528\u3002",
+                "questions": "\u5f00\u5de5\u524d\u95ee\u6e05\u695a\u884c\u4e1a\u3001\u98ce\u683c\u3001\u5e73\u53f0\u3001\u53c2\u8003\u6570\u91cf\u548c\u662f\u5426\u9700\u8981\u4e0b\u8f7d\u7d20\u6750\u3002",
+                "steps": "1. \u660e\u786e\u641c\u7d22\u65b9\u5411\n2. \u641c\u7d22\u5e76\u7b5b\u9009\u53c2\u8003\n3. \u6574\u7406\u6765\u6e90\u548c\u98ce\u683c\u7279\u5f81\n4. \u603b\u7ed3\u53ef\u501f\u9274\u7684\u8bbe\u8ba1\u70b9\n5. \u628a\u6709\u4ef7\u503c\u7684\u53c2\u8003\u5199\u5165\u77e5\u8bc6/\u7ecf\u9a8c",
+            }),
+        ])
+    elif any(word in role_text for word in ["\u7814\u7a76", "\u8d44\u6599", "\u5206\u6790", "\u8c03\u7814", "research", "analysis"]):
+        presets.extend([
+            _normalize_workflow({
+                "id": "wf-web-research",
+                "name": "\u7f51\u9875\u8c03\u7814",
+                "description": "\u9700\u8981\u8054\u7f51\u641c\u96c6\u8d44\u6599\u3001\u6bd4\u8f83\u4fe1\u606f\u3001\u5199\u8c03\u7814\u7ed3\u8bba\u65f6\u4f7f\u7528\u3002",
+                "questions": "\u5f00\u5de5\u524d\u95ee\u6e05\u695a\u7814\u7a76\u95ee\u9898\u3001\u8303\u56f4\u3001\u65f6\u95f4\u8981\u6c42\u3001\u6765\u6e90\u504f\u597d\u548c\u8f93\u51fa\u683c\u5f0f\u3002",
+                "steps": "1. \u62c6\u89e3\u7814\u7a76\u95ee\u9898\n2. \u68c0\u67e5\u5df2\u6709\u77e5\u8bc6\n3. \u641c\u96c6\u5e76\u4ea4\u53c9\u9a8c\u8bc1\u4fe1\u606f\n4. \u6574\u7406\u6765\u6e90\n5. \u8f93\u51fa\u7ed3\u8bba\u548c\u4e0d\u786e\u5b9a\u70b9\n6. \u6c89\u6dc0\u65b0\u77e5\u8bc6",
+            }),
+            _normalize_workflow({
+                "id": "wf-local-learning",
+                "name": "\u5b66\u4e60\u672c\u5730\u8d44\u6599",
+                "description": "\u9700\u8981\u8bfb\u53d6\u7528\u6237\u4e0a\u4f20\u6216\u672c\u5730\u6587\u4ef6\uff0c\u5e76\u6574\u7406\u6210\u5458\u5de5\u77e5\u8bc6\u65f6\u4f7f\u7528\u3002",
+                "questions": "\u5f00\u5de5\u524d\u95ee\u6e05\u695a\u5b66\u4e60\u76ee\u6807\u3001\u91cd\u70b9\u6587\u4ef6\u3001\u5b66\u4e60\u6df1\u5ea6\u548c\u672a\u6765\u8981\u7528\u5728\u54ea\u4e9b\u4efb\u52a1\u4e0a\u3002",
+                "steps": "1. \u68c0\u67e5\u8d44\u6599\u5217\u8868\n2. \u786e\u8ba4\u5b66\u4e60\u76ee\u6807\n3. \u9605\u8bfb\u5e76\u63d0\u70bc\u5173\u952e\u77e5\u8bc6\n4. \u5199\u5165\u77e5\u8bc6\u5e93\n5. \u603b\u7ed3\u672c\u6b21\u5b66\u4e60\u7684\u7ecf\u9a8c",
+            }),
+        ])
+    elif any(word in role_text for word in ["\u4ee3\u7801", "\u7a0b\u5e8f", "\u5f00\u53d1", "code", "dev", "bug"]):
+        presets.extend([
+            _normalize_workflow({
+                "id": "wf-code-review",
+                "name": "\u68c0\u67e5\u4ee3\u7801",
+                "description": "\u9700\u8981\u67e5\u627e bug\u3001\u98ce\u9669\u3001\u91cd\u6784\u70b9\u6216\u6d4b\u8bd5\u7f3a\u53e3\u65f6\u4f7f\u7528\u3002",
+                "questions": "\u5f00\u5de5\u524d\u95ee\u6e05\u695a\u68c0\u67e5\u8303\u56f4\u3001\u5173\u6ce8\u98ce\u9669\u3001\u662f\u5426\u5141\u8bb8\u4fee\u6539\u548c\u9700\u8981\u54ea\u79cd\u8f93\u51fa\u3002",
+                "steps": "1. \u786e\u8ba4\u68c0\u67e5\u8303\u56f4\n2. \u9605\u8bfb\u76f8\u5173\u4ee3\u7801\n3. \u5217\u51fa\u98ce\u9669\u548c\u4f18\u5148\u7ea7\n4. \u63d0\u51fa\u4fee\u590d\u65b9\u6848\n5. \u7ecf\u7528\u6237\u786e\u8ba4\u540e\u518d\u4fee\u6539\n6. \u8bb0\u5f55\u9879\u76ee\u7ecf\u9a8c",
+            }),
+        ])
+    else:
+        presets.append(_normalize_workflow({
+            "id": "wf-learning",
+            "name": "\u5b66\u4e60\u548c\u79ef\u7d2f",
+            "description": "\u9700\u8981\u8ba9\u5458\u5de5\u56f4\u7ed5\u67d0\u4e2a\u65b9\u5411\u6301\u7eed\u5b66\u4e60\u3001\u603b\u7ed3\u5e76\u79ef\u7d2f\u7ecf\u9a8c\u65f6\u4f7f\u7528\u3002",
+            "questions": "\u5f00\u5de5\u524d\u95ee\u6e05\u695a\u5b66\u4e60\u65b9\u5411\u3001\u8d44\u6599\u6765\u6e90\u3001\u8f93\u51fa\u5f62\u5f0f\u548c\u591a\u4e45\u590d\u76d8\u4e00\u6b21\u3002",
+            "steps": "1. \u786e\u8ba4\u5b66\u4e60\u76ee\u6807\n2. \u68c0\u67e5\u5df2\u6709\u77e5\u8bc6\n3. \u9605\u8bfb\u6216\u641c\u7d22\u65b0\u8d44\u6599\n4. \u603b\u7ed3\u5173\u952e\u6536\u83b7\n5. \u66f4\u65b0\u77e5\u8bc6\u5e93\u548c\u7ecf\u9a8c",
+        }))
+    return presets
+
+def _ensure_employee_workflows(emp: dict) -> list[dict]:
+    workflows = emp.get("workflows")
+    if not isinstance(workflows, list):
+        workflows = []
+    normalized = []
+    seen = set()
+    for idx, workflow in enumerate(workflows):
+        if not isinstance(workflow, dict):
+            continue
+        wf = _normalize_workflow(workflow, fallback_name=f"\u5e38\u7528\u4efb\u52a1 {idx + 1}")
+        if wf["id"] in seen:
+            wf["id"] = _new_workflow_id()
+        seen.add(wf["id"])
+        normalized.append(wf)
+    if not normalized:
+        normalized.extend(_preset_workflows_for_employee(emp))
+        emp["workflow_presets_seeded_at"] = emp.get("workflow_presets_seeded_at") or _now_iso()
+    elif not emp.get("workflow_presets_seeded_at"):
+        existing_ids = {wf.get("id") for wf in normalized}
+        for preset in _preset_workflows_for_employee(emp):
+            if preset.get("id") not in existing_ids:
+                normalized.append(preset)
+                existing_ids.add(preset.get("id"))
+        emp["workflow_presets_seeded_at"] = _now_iso()
+    if not any(wf.get("is_default") for wf in normalized):
+        normalized[0]["is_default"] = True
+    default_seen = False
+    for wf in normalized:
+        if wf.get("is_default") and not default_seen:
+            default_seen = True
+        elif wf.get("is_default"):
+            wf["is_default"] = False
+    emp["workflows"] = normalized
+    return normalized
+
+def _workflow_summary_for_prompt(workflow: dict | None) -> str:
+    if not workflow:
+        return "\u672a\u6307\u5b9a\u5e38\u7528\u4efb\u52a1\u3002"
+    description = workflow.get("description", "") or "\u672a\u8bbe\u5b9a"
+    questions = workflow.get("questions", "") or "\u8bf7\u6839\u636e\u4efb\u52a1\u4e3b\u52a8\u63d0\u95ee"
+    steps = workflow.get("steps", "") or "\u8bf7\u5148\u6839\u636e\u4efb\u52a1\u751f\u6210\u8be6\u7ec6\u8ba1\u5212"
+    parts = [
+        f"\u5e38\u7528\u4efb\u52a1\uff1a{workflow.get('name', '')}",
+        f"\u9002\u7528\u573a\u666f\uff1a{description}",
+        f"\u5f00\u5de5\u524d\u9700\u8981\u95ee\u6e05\u695a\uff1a{questions}",
+        f"\u53c2\u8003\u6b65\u9aa4\uff1a\n{steps}",
+    ]
+    return "\n".join(parts)
+
+def _append_employee_experience_text(employee_id: str, text: str, title: str = "\u5de5\u4f5c\u7ecf\u9a8c"):
+    exp_text = (text or "").strip()
+    if not exp_text:
+        return
+    exp_path = _employee_dir(employee_id) / "experience.md"
+    current = _read_file_safe(exp_path)
+    new_exp = f"\n> {datetime.now().strftime('%Y-%m-%d %H:%M')} {title}\n{exp_text}\n"
+    exp_path.parent.mkdir(parents=True, exist_ok=True)
+    exp_path.write_text(current + new_exp, encoding="utf-8")
+
+def _strip_think_blocks_text(text: str) -> str:
+    if not text:
+        return ""
+    return re.sub(
+        r"<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)(?:\s[^>]*)?>.*?</(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\s*>",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+def _merge_streamed_and_final_text(streamed_text: str, final_text: str) -> str:
+    streamed = _strip_think_blocks_text(streamed_text or "").strip()
+    final = _strip_think_blocks_text(final_text or "").strip()
+    if final == "(no response)":
+        final = ""
+    if not streamed:
+        return final
+    if not final:
+        return streamed
+    if final in streamed:
+        return streamed
+    if streamed in final:
+        return final
+    return streamed.rstrip() + "\n\n" + final.lstrip()
+
+def _employee_tasks_path(employee_id: str) -> Path:
+    return _employee_dir(employee_id) / "tasks" / "index.json"
+
+def _load_employee_tasks(employee_id: str) -> dict:
+    path = _employee_tasks_path(employee_id)
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and isinstance(data.get("tasks"), list):
+                return data
+        except Exception:
+            pass
+    return {"tasks": []}
+
+def _save_employee_tasks(employee_id: str, data: dict):
+    path = _employee_tasks_path(employee_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _new_employee_task_id() -> str:
+    return "task-" + uuid.uuid4().hex[:8]
+
+def _latest_employee_tasks(employee_id: str, limit: int = 12) -> list[dict]:
+    data = _load_employee_tasks(employee_id)
+    tasks = data.get("tasks", [])
+    tasks.sort(key=lambda item: item.get("updated_at") or item.get("created_at") or "", reverse=True)
+    return tasks[:limit]
+
+
+def _employee_latest_task(employee_id: str) -> dict | None:
+    """Return the most recent task for an employee, or None."""
+    tasks = _latest_employee_tasks(employee_id, limit=1)
+    return tasks[0] if tasks else None
+
+def _create_employee_task(employee_id: str, workflow: dict | None, session_id: str, title: str, status: str = "planning") -> dict:
+    data = _load_employee_tasks(employee_id)
+    now = _now_iso()
+    workflow_name = (workflow or {}).get("name", "") or "\u5e38\u7528\u4efb\u52a1"
+    task = {
+        "id": _new_employee_task_id(),
+        "employee_id": employee_id,
+        "title": (title or workflow_name or "\u5458\u5de5\u4efb\u52a1").strip(),
+        "workflow_id": (workflow or {}).get("id", ""),
+        "workflow_name": workflow_name,
+        "status": status,
+        "session_id": session_id,
+        "created_at": now,
+        "updated_at": now,
+        "plan_confirmed_at": "",
+        "completed_at": "",
+        "result_summary": "",
+    }
+    data.setdefault("tasks", []).append(task)
+    _save_employee_tasks(employee_id, data)
+    return task
+
+def _update_employee_task(employee_id: str, task_id: str, **updates) -> dict | None:
+    data = _load_employee_tasks(employee_id)
+    for task in data.get("tasks", []):
+        if task.get("id") == task_id:
+            for key, value in updates.items():
+                task[key] = value
+            task["updated_at"] = _now_iso()
+            _save_employee_tasks(employee_id, data)
+            return task
+    return None
+
+def _find_employee_task(employee_id: str, task_id: str) -> dict | None:
+    data = _load_employee_tasks(employee_id)
+    return next((task for task in data.get("tasks", []) if task.get("id") == task_id), None)
+
 def _read_file_safe(path: Path) -> str:
     try:
         if path.exists():
@@ -122,6 +428,7 @@ def _build_profile_md(emp: dict) -> str:
     _wc = emp.get("work_content") or ""
     _ws = emp.get("work_steps") or emp.get("steps") or ""
     _sg = emp.get("self_growth") or emp.get("learn_topics") or ""
+    _workflows = _ensure_employee_workflows(emp)
     if emp.get("goal") or _wc or _ws or emp.get("notes"):
         lines.append(f"## 工作设定")
     if emp.get("goal"):
@@ -139,6 +446,18 @@ def _build_profile_md(emp: dict) -> str:
     if emp.get("work_mode"):
         lines.append(f"## 工作模式")
         lines.append(f"- {emp.get('work_mode', '混合模式')}")
+    if _workflows:
+        lines.append("")
+        lines.append("## 常用任务")
+        for wf in _workflows:
+            marker = "（默认）" if wf.get("is_default") else ""
+            lines.append(f"### {wf.get('name', '')}{marker}")
+            if wf.get("description"):
+                lines.append(f"- 适用场景：{wf.get('description', '')}")
+            if wf.get("questions"):
+                lines.append(f"- 开工前提问：{wf.get('questions', '')}")
+            if wf.get("steps"):
+                lines.append(f"- 参考步骤：\n{wf.get('steps', '')}")
     return "\n".join(lines)
 
 def _find_employee_by_session(session_id: str) -> dict | None:
@@ -463,10 +782,33 @@ def _ensure_session_record(session_id: str) -> None:
     except Exception as e:
         log_msg("WARN", f"[{session_id[:12]}] Failed to ensure DB session: {e}")
 
+def _validate_session_id(session_id: str) -> str:
+    sid = str(session_id or "").strip()
+    if not SESSION_ID_RE.match(sid):
+        raise HTTPException(status_code=400, detail="Invalid session id")
+    return sid
+
+
 def get_session_dir(session_id: str) -> Path:
-    d = HERMES_HOME / "desktop-client" / "sessions" / session_id
+    sid = _validate_session_id(session_id)
+    root = (HERMES_HOME / "desktop-client" / "sessions").resolve()
+    d = (root / sid).resolve()
+    try:
+        d.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session path")
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _session_file_path(session_id: str, filename: str) -> Path:
+    base = get_session_dir(session_id).resolve()
+    target = (base / filename).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid file path")
+    return target
 
 def _empty_session():
     return {
@@ -508,7 +850,7 @@ def create_agent(session_id: str) -> AIAgent:
         credential_pool=runtime.get("credential_pool"),
         max_iterations=_cfg_max_turns(cfg, 90),
         quiet_mode=True,
-        verbose_logging=False,
+        verbose_logging=True,
         session_id=session_id,
         session_db=session_db,
         platform=SESSION_SOURCE,
@@ -590,7 +932,11 @@ async def list_employees():
         data = _load_employees_index()
         employees = data.get("employees", [])
         for emp in employees:
+            _ensure_employee_workflows(emp)
             emp["max_slots"] = MAX_EMPLOYEES
+            # Attach latest task for home-page display
+            emp["latest_task"] = _employee_latest_task(emp["id"])
+        _save_employees_index(data)
         return {"ok": True, "employees": employees, "max": MAX_EMPLOYEES}
     except Exception as e:
         log_msg("WARN", f"List employees failed: {e}")
@@ -622,6 +968,9 @@ async def create_employee(request: Request):
             "work_mode": (body.get("work_mode") or "manual").strip(),
             "created_at": datetime.now().isoformat(),
         }
+        if isinstance(body.get("workflows"), list):
+            emp["workflows"] = body.get("workflows")
+        _ensure_employee_workflows(emp)
         employees.append(emp)
         _save_employees_index(data)
         profile_path = _employee_profile_path(emp_id)
@@ -643,6 +992,8 @@ async def get_employee(employee_id: str):
         data = _load_employees_index()
         for emp in data.get("employees", []):
             if emp["id"] == employee_id:
+                _ensure_employee_workflows(emp)
+                _save_employees_index(data)
                 pp = _employee_profile_path(employee_id)
                 emp["profile_md"] = pp.read_text(encoding="utf-8") if pp.exists() else ""
                 emp["max_slots"] = MAX_EMPLOYEES
@@ -666,6 +1017,9 @@ async def update_employee(employee_id: str, request: Request):
                            "notes", "work_mode", "session_id"]:
                     if key in body:
                         emp[key] = (body[key] or "").strip()
+                if "workflows" in body and isinstance(body["workflows"], list):
+                    emp["workflows"] = body["workflows"]
+                _ensure_employee_workflows(emp)
                 _save_employees_index(data)
                 _employee_profile_path(employee_id).write_text(
                     _build_profile_md(emp), encoding="utf-8"
@@ -677,6 +1031,167 @@ async def update_employee(employee_id: str, request: Request):
         raise
     except Exception as e:
         log_msg("WARN", f"Update employee failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/employees/{employee_id}/workflows")
+async def list_employee_workflows(employee_id: str):
+    try:
+        data = _load_employees_index()
+        for emp in data.get("employees", []):
+            if emp["id"] == employee_id:
+                workflows = _ensure_employee_workflows(emp)
+                _save_employees_index(data)
+                return {"ok": True, "workflows": workflows}
+        raise HTTPException(status_code=404, detail="Employee not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"List workflows failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees/{employee_id}/workflows")
+async def create_employee_workflow(employee_id: str, request: Request):
+    try:
+        body = await request.json()
+        data = _load_employees_index()
+        for emp in data.get("employees", []):
+            if emp["id"] == employee_id:
+                workflows = _ensure_employee_workflows(emp)
+                wf = _normalize_workflow(body, fallback_name="\u65b0\u5e38\u7528\u4efb\u52a1")
+                if wf.get("is_default"):
+                    for item in workflows:
+                        item["is_default"] = False
+                workflows.append(wf)
+                _save_employees_index(data)
+                _employee_profile_path(employee_id).write_text(_build_profile_md(emp), encoding="utf-8")
+                return {"ok": True, "workflow": wf, "workflows": workflows}
+        raise HTTPException(status_code=404, detail="Employee not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Create workflow failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.put("/api/employees/{employee_id}/workflows/{workflow_id}")
+async def update_employee_workflow(employee_id: str, workflow_id: str, request: Request):
+    try:
+        body = await request.json()
+        data = _load_employees_index()
+        for emp in data.get("employees", []):
+            if emp["id"] == employee_id:
+                workflows = _ensure_employee_workflows(emp)
+                for idx, item in enumerate(workflows):
+                    if item.get("id") == workflow_id:
+                        updated = dict(item)
+                        for key in ["name", "description", "steps", "questions"]:
+                            if key in body:
+                                updated[key] = body.get(key) or ""
+                        for key in ["enabled", "is_default", "default_inputs"]:
+                            if key in body:
+                                updated[key] = body.get(key)
+                        updated["updated_at"] = _now_iso()
+                        workflows[idx] = _normalize_workflow(updated)
+                        if workflows[idx].get("is_default"):
+                            for other in workflows:
+                                if other.get("id") != workflow_id:
+                                    other["is_default"] = False
+                        if not any(wf.get("is_default") for wf in workflows):
+                            workflows[0]["is_default"] = True
+                        _save_employees_index(data)
+                        _employee_profile_path(employee_id).write_text(_build_profile_md(emp), encoding="utf-8")
+                        return {"ok": True, "workflow": workflows[idx], "workflows": workflows}
+                raise HTTPException(status_code=404, detail="Workflow not found")
+        raise HTTPException(status_code=404, detail="Employee not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Update workflow failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.delete("/api/employees/{employee_id}/workflows/{workflow_id}")
+async def delete_employee_workflow(employee_id: str, workflow_id: str):
+    try:
+        data = _load_employees_index()
+        for emp in data.get("employees", []):
+            if emp["id"] == employee_id:
+                workflows = _ensure_employee_workflows(emp)
+                if len(workflows) <= 1:
+                    return {"ok": False, "error": "\u81f3\u5c11\u4fdd\u7559\u4e00\u4e2a\u5e38\u7528\u4efb\u52a1"}
+                next_workflows = [wf for wf in workflows if wf.get("id") != workflow_id]
+                if len(next_workflows) == len(workflows):
+                    raise HTTPException(status_code=404, detail="Workflow not found")
+                if not any(wf.get("is_default") for wf in next_workflows):
+                    next_workflows[0]["is_default"] = True
+                emp["workflows"] = next_workflows
+                _save_employees_index(data)
+                _employee_profile_path(employee_id).write_text(_build_profile_md(emp), encoding="utf-8")
+                return {"ok": True, "workflows": next_workflows}
+        raise HTTPException(status_code=404, detail="Employee not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Delete workflow failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees/{employee_id}/workflows/capture")
+async def capture_employee_workflow(employee_id: str, request: Request):
+    try:
+        body = await request.json()
+        mode = (body.get("mode") or "experience").strip()
+        workflow_id = (body.get("workflow_id") or "").strip()
+        name = (body.get("name") or "\u8fd9\u6b21\u7684\u597d\u505a\u6cd5").strip()
+        notes = (body.get("notes") or "").strip()
+        result = (body.get("result") or "").strip()
+        task_id = (body.get("task_id") or "").strip()
+        data = _load_employees_index()
+        for emp in data.get("employees", []):
+            if emp["id"] != employee_id:
+                continue
+            workflows = _ensure_employee_workflows(emp)
+            selected = next((wf for wf in workflows if wf.get("id") == workflow_id), None)
+            notes_text = notes or "\u672a\u586b\u5199"
+            result_text = result or "\u672a\u63d0\u4f9b"
+            experience = (
+                f"## {name}\n\n"
+                f"### \u7528\u6237\u53cd\u9988/\u60f3\u4fdd\u7559\u7684\u505a\u6cd5\n{notes_text}\n\n"
+                f"### \u672c\u6b21\u7ed3\u679c\u6458\u8981\n{result_text}\n"
+            )
+            _append_employee_experience_text(employee_id, experience, "\u7528\u6237\u9a8c\u6536\u540e\u6c89\u6dc0")
+
+            workflow = None
+            if mode == "new":
+                workflow = _normalize_workflow({
+                    "name": name,
+                    "description": notes or (selected or {}).get("description", ""),
+                    "questions": (selected or {}).get("questions", ""),
+                    "steps": (selected or {}).get("steps", ""),
+                    "enabled": True,
+                    "is_default": False,
+                })
+                workflows.append(workflow)
+            elif mode == "update" and selected:
+                selected["description"] = notes or selected.get("description", "")
+                selected["updated_at"] = _now_iso()
+                workflow = selected
+
+            task = None
+            if task_id:
+                task = _update_employee_task(
+                    employee_id,
+                    task_id,
+                    status="done",
+                    completed_at=_now_iso(),
+                    result_summary=result,
+                )
+
+            _save_employees_index(data)
+            _employee_profile_path(employee_id).write_text(_build_profile_md(emp), encoding="utf-8")
+            return {"ok": True, "mode": mode, "workflow": workflow, "workflows": workflows, "task": task}
+        raise HTTPException(status_code=404, detail="Employee not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Capture workflow failed: {e}")
         return {"ok": False, "error": str(e)}
 
 @app.delete("/api/employees/{employee_id}")
@@ -706,11 +1221,7 @@ async def append_employee_experience(employee_id: str, request: Request):
         exp_text = (body.get("experience") or "").strip()
         if not exp_text:
             return {"ok": False, "error": "经验内容为空"}
-        exp_path = _employee_dir(employee_id) / "experience.md"
-        current = _read_file_safe(exp_path)
-        new_exp = f"\n> {datetime.now().strftime('%Y-%m-%d %H:%M')}\n{exp_text}\n"
-        exp_path.parent.mkdir(parents=True, exist_ok=True)
-        exp_path.write_text(current + new_exp, encoding="utf-8")
+        _append_employee_experience_text(employee_id, exp_text)
         return {"ok": True}
     except Exception as e:
         log_msg("WARN", f"Append experience failed: {e}")
@@ -721,14 +1232,106 @@ async def trigger_employee(employee_id: str, request: Request):
     try:
         body = await request.json()
         message = body.get("message", "")
+        workflow_id = (body.get("workflow_id") or "").strip()
         data = _load_employees_index()
         emp = next((e for e in data.get("employees", []) if e["id"] == employee_id), None)
         if not emp:
             return {"ok": False, "error": "Employee not found"}
-        return {"ok": True, "employee_id": employee_id, "message": message,
-                "session_id": emp.get("session_id") or employee_id}
+        workflows = _ensure_employee_workflows(emp)
+        workflow = next((wf for wf in workflows if wf.get("id") == workflow_id), None)
+        if workflow is None:
+            workflow = next((wf for wf in workflows if wf.get("is_default")), workflows[0] if workflows else None)
+        task_text = (message or "\u5f00\u59cb\u51c6\u5907\u8fd9\u4e2a\u5e38\u7528\u4efb\u52a1").strip()
+        session_id = emp.get("session_id") or employee_id
+        task = _create_employee_task(employee_id, workflow, session_id, task_text, "planning")
+        prompt = (
+            f"{task_text}\n\n"
+            f"\u672c\u6b21\u4efb\u52a1\u8bb0\u5f55\uff1a{task.get('id')}\n\n"
+            f"{_workflow_summary_for_prompt(workflow)}\n\n"
+            "\u8bf7\u4e0d\u8981\u7acb\u523b\u5f00\u59cb\u6700\u7ec8\u6267\u884c\u3002"
+            "\u5148\u50cf\u4e00\u4f4d\u9760\u8c31\u5458\u5de5\u4e00\u6837\uff0c\u5c3d\u91cf\u95ee\u6e05\u695a\u5173\u952e\u95ee\u9898\uff1b"
+            "\u5982\u679c\u4fe1\u606f\u5df2\u7ecf\u8db3\u591f\uff0c\u8bf7\u5148\u7ed9\u51fa\u4e00\u4efd\u8be6\u7ec6\u3001\u5168\u9762\u7684\u672c\u6b21\u5de5\u4f5c\u8ba1\u5212\u3002"
+            "\u8ba1\u5212\u9700\u5305\u542b\uff1a\u4f60\u7406\u89e3\u7684\u76ee\u6807\u3001\u8fd8\u9700\u8981\u7528\u6237\u8865\u5145\u7684\u4fe1\u606f\u3001"
+            "\u51c6\u5907\u91c7\u7528\u7684\u6b65\u9aa4\u3001\u4e2d\u9014\u9700\u8981\u786e\u8ba4\u7684\u8282\u70b9\u3001\u6700\u7ec8\u8f93\u51fa\u4ec0\u4e48\u3002"
+            "\u6700\u540e\u8bf7\u660e\u786e\u7b49\u5f85\u7528\u6237\u786e\u8ba4\u540e\u518d\u5f00\u59cb\u5e72\u6d3b\u3002"
+        )
+        _save_employees_index(data)
+        return {"ok": True, "employee_id": employee_id, "message": prompt,
+                "workflow": workflow, "task": task, "session_id": session_id}
     except Exception as e:
         log_msg("WARN", f"Trigger employee failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.get("/api/employees/{employee_id}/tasks")
+async def list_employee_tasks(employee_id: str, limit: int = 12):
+    try:
+        data = _load_employees_index()
+        emp = next((e for e in data.get("employees", []) if e["id"] == employee_id), None)
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        limit = max(1, min(int(limit or 12), 50))
+        return {"ok": True, "tasks": _latest_employee_tasks(employee_id, limit)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"List employee tasks failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees/{employee_id}/tasks/{task_id}/confirm")
+async def confirm_employee_task(employee_id: str, task_id: str, request: Request):
+    try:
+        data = _load_employees_index()
+        emp = next((e for e in data.get("employees", []) if e["id"] == employee_id), None)
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        task = _find_employee_task(employee_id, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        body = await request.json()
+        note = (body.get("note") or "").strip()
+        now = _now_iso()
+        task = _update_employee_task(
+            employee_id,
+            task_id,
+            status="running",
+            plan_confirmed_at=now,
+            user_confirm_note=note,
+        )
+        note_text = f"\n\u7528\u6237\u8865\u5145\u8bf4\u660e\uff1a{note}\n" if note else ""
+        prompt = (
+            f"\u7528\u6237\u5df2\u786e\u8ba4\u4efb\u52a1 {task_id} \u7684\u5de5\u4f5c\u8ba1\u5212\u3002"
+            f"{note_text}"
+            "\u73b0\u5728\u8bf7\u6309\u521a\u624d\u786e\u8ba4\u7684\u8ba1\u5212\u5f00\u59cb\u771f\u6b63\u6267\u884c\u3002"
+            "\u6267\u884c\u4e2d\u5982\u679c\u9047\u5230\u4f1a\u5f71\u54cd\u7ed3\u679c\u7684\u5173\u952e\u95ee\u9898\uff0c\u53ef\u4ee5\u6682\u505c\u5e76\u8be2\u95ee\u7528\u6237\uff1b"
+            "\u5982\u679c\u4fe1\u606f\u8db3\u591f\uff0c\u8bf7\u76f4\u63a5\u5b8c\u6210\u4efb\u52a1\u5e76\u7ed9\u51fa\u6e05\u6670\u7ed3\u679c\u3002"
+            "\u5b8c\u6210\u65f6\u8bf7\u5728\u7ed3\u5c3e\u7528\u201c\u4efb\u52a1\u7ed3\u679c\u201d\u548c\u201c\u53ef\u6c89\u6dc0\u7ecf\u9a8c\u201d\u4e24\u90e8\u5206\u7b80\u8981\u603b\u7ed3\u3002"
+        )
+        return {"ok": True, "task": task, "message": prompt, "session_id": emp.get("session_id") or employee_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Confirm employee task failed: {e}")
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/employees/{employee_id}/tasks/{task_id}/complete")
+async def complete_employee_task(employee_id: str, task_id: str, request: Request):
+    try:
+        body = await request.json()
+        result_summary = (body.get("result_summary") or "").strip()
+        task = _update_employee_task(
+            employee_id,
+            task_id,
+            status="done",
+            completed_at=_now_iso(),
+            result_summary=result_summary,
+        )
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return {"ok": True, "task": task}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("WARN", f"Complete employee task failed: {e}")
         return {"ok": False, "error": str(e)}
 
 @app.post("/api/employees/{employee_id}/knowledge")
@@ -944,6 +1547,18 @@ async def get_history(session_id: str):
 
     return {"history": _history_for_frontend(history)}
 
+@app.get("/api/session/{session_id}/status")
+async def get_session_status(session_id: str):
+    try:
+        session_id = _validate_session_id(session_id)
+    except HTTPException:
+        raise
+    with session_lock:
+        session = sessions.get(session_id)
+        thread = (session or {}).get("agent_thread")
+        running = bool((session or {}).get("running")) or bool(thread and thread.is_alive())
+    return {"ok": True, "session_id": session_id, "running": running}
+
 @app.post("/api/session/{session_id}/interrupt")
 async def interrupt_session(session_id: str):
     with session_lock:
@@ -988,11 +1603,17 @@ async def upload_file(session_id: str, file: UploadFile = File(...)):
     session_dir = get_session_dir(session_id) / "uploads"
     session_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sanitize filename
-    safe_name = Path(file.filename).name
-    filepath = session_dir / safe_name
+    safe_name = Path(file.filename or "upload.bin").name or "upload.bin"
+    filepath = (session_dir / safe_name).resolve()
+    try:
+        filepath.relative_to(session_dir.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid upload path")
 
     content = await file.read()
+    max_bytes = 100 * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(status_code=413, detail="File too large")
     with open(filepath, "wb") as f:
         f.write(content)
 
@@ -1018,7 +1639,7 @@ async def list_files(session_id: str):
 
 @app.get("/api/file/{session_id}/{filename:path}")
 async def download_file(session_id: str, filename: str):
-    filepath = get_session_dir(session_id) / filename
+    filepath = _session_file_path(session_id, filename)
     if not filepath.exists() or not filepath.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(filepath)
@@ -1426,6 +2047,14 @@ def register_browser_bubble_fallbacks():
 
 @app.websocket("/ws/chat/{session_id}")
 async def websocket_chat(websocket: WebSocket, session_id: str):
+    if not _ws_request_is_allowed(websocket):
+        await websocket.close(code=1008)
+        return
+    try:
+        session_id = _validate_session_id(session_id)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
 
     # Track connection for auto-shutdown
@@ -1442,9 +2071,27 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
     # Queue for cross-thread streaming
     msg_queue: asyncio.Queue = asyncio.Queue()
     main_loop = asyncio.get_running_loop()
+    stream_state = {"chunks": []}
+    client_connected = True
+
+    async def safe_send(payload: dict) -> bool:
+        nonlocal client_connected
+        if not client_connected:
+            return False
+        try:
+            await websocket.send_json(payload)
+            return True
+        except Exception:
+            client_connected = False
+            return False
 
     def emit_event(event: dict):
         """Called from agent thread; schedule push to WS."""
+        try:
+            if event.get("type") == "delta" and event.get("text"):
+                stream_state["chunks"].append(str(event.get("text") or ""))
+        except Exception:
+            pass
         main_loop.call_soon_threadsafe(
             msg_queue.put_nowait, event,
         )
@@ -1453,6 +2100,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
         while True:
             data = await websocket.receive_json()
             message = data.get("message", "").strip()
+            stream_state["chunks"] = []
 
             if not message:
                 await websocket.send_json({"type": "error", "text": "Empty message"})
@@ -1501,6 +2149,11 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             # Check for session switch
             if message.startswith("/switch "):
                 new_sid = message.split(" ", 1)[1].strip()
+                try:
+                    new_sid = _validate_session_id(new_sid)
+                except HTTPException:
+                    await websocket.send_json({"type": "error", "text": "Invalid session id"})
+                    continue
                 await websocket.send_json({"type": "info", "text": "Switched to session " + new_sid})
                 session_id = new_sid
                 with session_lock:
@@ -1519,6 +2172,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 conversation_history = list(session.get("history") or [])
                 session["history"] = conversation_history + [{"role": "user", "content": message}]
             log_msg("INFO", f"[{session_id[:12]}] User: {message[:60]}")
+            log_msg("INFO", f"[{session_id[:12]}] History length: {len(conversation_history)} messages")
 
             # Auto-title on first exchange
             user_count = len([m for m in session["history"] if m.get("role") == "user"])
@@ -1527,7 +2181,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 session["title"] = title
 
             # Signal frontend that agent is thinking
-            await websocket.send_json({"type": "status", "text": "thinking"})
+            await safe_send({"type": "status", "text": "thinking"})
 
             # Run agent in background thread
             result_holder = {}
@@ -1554,6 +2208,11 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                         log_msg("TRACE", f"[{session_id[:12]}] {line}")
                     error_holder["error"] = str(e)
                 finally:
+                    with session_lock:
+                        current = sessions.get(session_id)
+                        if current is session:
+                            current["running"] = False
+                            current["agent_thread"] = None
                     main_loop.call_soon_threadsafe(msg_queue.put_nowait, None)
 
             agent_thread = threading.Thread(target=run_agent, daemon=True)
@@ -1568,14 +2227,15 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     msg = await asyncio.wait_for(msg_queue.get(), timeout=0.05)
                     if msg is None:  # Sentinel — agent finished
                         break
-                    await websocket.send_json(msg)
+                    await safe_send(msg)
                 except asyncio.TimeoutError:
                     continue
 
             agent_thread.join(timeout=30)
             with session_lock:
-                session["running"] = False
-                session["agent_thread"] = None
+                if not agent_thread.is_alive():
+                    session["running"] = False
+                    session["agent_thread"] = None
 
             # Process result
             if "result" in result_holder:
@@ -1587,14 +2247,34 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
 
                 final_text = result.get("final_response", "")
                 log_msg("INFO", f"[{session_id[:12]}] Agent response complete, {len(final_text)} chars")
+                _api_calls = result.get("api_calls", 0)
+                _msg_count = len(full_messages) if full_messages else 0
+                log_msg("INFO", f"[{session_id[:12]}] Turn stats: api_calls={_api_calls}, total_messages={_msg_count}")
                 if not final_text and full_messages:
                     last = full_messages[-1]
                     if last.get("role") == "assistant":
                         final_text = last.get("content", "")
                 if result.get("interrupted"):
-                    await websocket.send_json({"type": "info", "text": "Interrupted"})
+                    await safe_send({"type": "info", "text": "Interrupted"})
+                streamed_text = "".join(stream_state.get("chunks") or [])
+                merged_text = _merge_streamed_and_final_text(streamed_text, final_text)
+                if merged_text:
+                    final_text = merged_text
+                    if full_messages:
+                        for idx in range(len(full_messages) - 1, -1, -1):
+                            if full_messages[idx].get("role") == "assistant":
+                                full_messages[idx] = {**full_messages[idx], "content": final_text}
+                                break
+                        else:
+                            full_messages.append({"role": "assistant", "content": final_text})
+                        with session_lock:
+                            session["history"] = full_messages
+                        try:
+                            session_db.replace_messages(session_id, full_messages)
+                        except Exception as e:
+                            log_msg("WARN", f"[{session_id[:12]}] Replace merged history failed: {e}")
 
-                await websocket.send_json({
+                await safe_send({
                     "type": "done",
                     "text": final_text or "(no response)",
                     "interrupted": bool(result.get("interrupted")),
@@ -1613,7 +2293,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 with session_lock:
                     session["history"] = conversation_history
                 log_msg("ERROR", f"[{session_id[:12]}] Agent error: {error_holder['error']}")
-                await websocket.send_json({
+                await safe_send({
                     "type": "error",
                     "text": f"Agent error: {error_holder['error']}",
                 })
@@ -1622,7 +2302,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 if latest_history:
                     with session_lock:
                         session["history"] = latest_history
-                await websocket.send_json({"type": "session.updated", "session_id": session_id})
+                await safe_send({"type": "session.updated", "session_id": session_id})
             except Exception:
                 pass
 
@@ -1639,8 +2319,10 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             if session and session.get("callbacks", {}).get("emit") is emit_event:
                 session["callbacks"] = {}
             if session:
-                session["running"] = False
-                session["agent_thread"] = None
+                thread = session.get("agent_thread")
+                if not thread or not thread.is_alive():
+                    session["running"] = False
+                    session["agent_thread"] = None
         active_connections = max(0, active_connections - 1)
         log_msg("INFO", f"Client disconnected (active: {active_connections})")
         if active_connections == 0:
@@ -1876,38 +2558,37 @@ if __name__ == "__main__":
     }
 
     def _load_bubble_png(png_path):
-        """Convert PNG to BMP with magenta background, then load as HBITMAP via LoadImageW."""
+        """Build a stable white circular pony BMP and load it as HBITMAP."""
         try:
             from PIL import Image as _PILImage
+            from PIL import ImageDraw as _PILImageDraw
             import io as _io
 
-            if not os.path.exists(png_path):
+            source_path = png_path
+            fallback_path = str(STATIC_DIR / "bubble_pony_idle.bmp")
+            if not os.path.exists(source_path) and os.path.exists(fallback_path):
+                source_path = fallback_path
+            if not os.path.exists(source_path):
                 return False
 
-            # Open PNG, resize with high-quality scaling
-            pil_img = _PILImage.open(png_path).convert("RGBA")
-            pil_img = pil_img.resize((BUBBLE_SIZE, BUBBLE_SIZE), _PILImage.LANCZOS)
+            src = _PILImage.open(source_path).convert("RGBA")
 
-            # Many PNG icons are RGB (no alpha channel) with white "transparent"
-            # areas.  Convert RGBA to give those near-white pixels alpha=0 so
-            # they can be replaced by the magenta color-key below.
-            _THRESHOLD = 240
-            datas = pil_img.getdata()
-            new_data = []
-            for item in datas:
-                r, g, b, a = item
-                if r > _THRESHOLD and g > _THRESHOLD and b > _THRESHOLD:
-                    new_data.append((255, 0, 255, 0))   # transparent -> magenta key
-                else:
-                    new_data.append((r, g, b, a))
-            pil_img.putdata(new_data)
+            # The source PNG has a checkerboard "transparent" background baked
+            # into the pixels. Crop to the visible circular logo, then paste it
+            # onto a real white bubble so GDI can blit it reliably.
+            side = min(src.size)
+            left = max(0, (src.width - side) // 2)
+            top = max(0, (src.height - side) // 2)
+            src = src.crop((left, top, left + side, top + side))
 
-            # Create a magenta background image and composite
-            bg = _PILImage.new("RGBA", pil_img.size, (255, 0, 255, 255))
-            composite = _PILImage.alpha_composite(bg, pil_img)
+            canvas = _PILImage.new("RGBA", (BUBBLE_SIZE, BUBBLE_SIZE), (255, 255, 255, 255))
+            circle_mask = _PILImage.new("L", (BUBBLE_SIZE, BUBBLE_SIZE), 0)
+            draw = _PILImageDraw.Draw(circle_mask)
+            draw.ellipse((0, 0, BUBBLE_SIZE - 1, BUBBLE_SIZE - 1), fill=255)
 
-            # Convert to RGB before saving — BMP does NOT support alpha.
-            rgb_composite = composite.convert("RGB")
+            logo = src.resize((BUBBLE_SIZE, BUBBLE_SIZE), _PILImage.LANCZOS)
+            canvas.paste(logo, (0, 0), circle_mask)
+            rgb_composite = canvas.convert("RGB")
 
             # Save as BMP to memory
             bmp_bytes = _io.BytesIO()
@@ -1927,6 +2608,16 @@ if __name__ == "__main__":
                 _bubble_state["logo_hbitmap"] = hbitmap
                 return True
             return False
+        except Exception:
+            return False
+
+    def _reload_bubble_logo():
+        try:
+            if _bubble_state.get("logo_hbitmap"):
+                _gdi32.DeleteObject(_bubble_state["logo_hbitmap"])
+                _bubble_state["logo_hbitmap"] = None
+            bubble_png_path = str(STATIC_DIR / "bubble_icon.png")
+            return _load_bubble_png(bubble_png_path)
         except Exception:
             return False
 
@@ -2142,8 +2833,7 @@ if __name__ == "__main__":
             _user32.SetLayeredWindowAttributes(hwnd, COLOR_KEY, 255, LWA_ALPHA | LWA_COLORKEY)
 
             # Load PNG icon
-            bubble_png_path = str(STATIC_DIR / "bubble_icon.png")
-            _load_bubble_png(bubble_png_path)
+            _reload_bubble_logo()
 
             log_msg("INFO", f"Floating bubble created (hwnd={hwnd})")
 
@@ -2171,6 +2861,7 @@ if __name__ == "__main__":
             log_msg("INFO", f"Bubble show: visible={_bubble_state.get('visible')} hwnd={_bubble_state.get('hwnd')}")
             if _bubble_state.get("hwnd"):
                 bwnd = _bubble_state["hwnd"]
+                _reload_bubble_logo()
                 screen_w = _user32.GetSystemMetrics(0)
                 screen_h = _user32.GetSystemMetrics(1)
                 # Re-apply round region and layered attributes

@@ -1239,6 +1239,14 @@ class AIAgent:
         self._drop_trailing_empty_response_scaffolding(messages)
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
+        _msg_count = len(messages)
+        _user_count = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "user")
+        _asst_count = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "assistant")
+        _tool_count = sum(1 for m in messages if isinstance(m, dict) and m.get("role") == "tool")
+        logger.info(
+            "Persisting session %s: %d messages (user=%d, assistant=%d, tool=%d)",
+            self.session_id or "none", _msg_count, _user_count, _asst_count, _tool_count,
+        )
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 

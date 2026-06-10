@@ -17,10 +17,34 @@ const _md = new marked.Marked({
     gfm: true,
 });
 
+function sanitizeHtml(html) {
+    const template = document.createElement('template');
+    template.innerHTML = html || '';
+    const blockedTags = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META']);
+    const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_ELEMENT);
+    const remove = [];
+    while (walker.nextNode()) {
+        const el = walker.currentNode;
+        if (blockedTags.has(el.tagName)) {
+            remove.push(el);
+            continue;
+        }
+        for (const attr of Array.from(el.attributes)) {
+            const name = attr.name.toLowerCase();
+            const value = String(attr.value || '').trim().toLowerCase();
+            if (name.startsWith('on') || value.startsWith('javascript:') || value.startsWith('data:text/html')) {
+                el.removeAttribute(attr.name);
+            }
+        }
+    }
+    remove.forEach(el => el.remove());
+    return template.innerHTML;
+}
+
 function renderMarkdown(text) {
     if (!text) return '';
     try {
-        return _md.parse(text);
+        return sanitizeHtml(_md.parse(text));
     } catch (e) {
         return escapeHtml(text);
     }
@@ -40,6 +64,7 @@ const app = createApp({
         const config = ref({ model: 'loading...', provider: '', base_url: '', max_turns: 90 });
         const uploadedFiles = ref([]);
         const streamingText = ref('');
+        const streamingHtml = ref('');
         const showLog = ref(false);
         const serverLogs = ref([]);
         const showSettings = ref(false);
@@ -95,6 +120,20 @@ const app = createApp({
         const workflowSteps = ref('');
         const showWorkflowConfirm = ref(false);
         const workflowSummary = ref('');
+        const employeeWorkflows = ref([]);
+        const activeWorkflowId = ref('');
+        const workflowName = ref('');
+        const workflowDescription = ref('');
+        const workflowQuestions = ref('');
+        const employeeTaskBrief = ref('');
+        const showWorkflowCaptureDialog = ref(false);
+        const workflowCaptureMode = ref('experience');
+        const workflowCaptureName = ref('');
+        const workflowCaptureNotes = ref('');
+        const isCapturingWorkflow = ref(false);
+        const employeeTasks = ref([]);
+        const activeEmployeeTask = ref(null);
+        const isConfirmingEmployeeTask = ref(false);
         const empContextMenu = ref({ visible: false, x: 0, y: 0, emp: null });
         const showEmojiPicker = ref(false);
         const showEditEmojiPicker = ref(false);
@@ -117,6 +156,13 @@ const app = createApp({
                 .filter(j => j.last_run_at)
                 .sort((a, b) => new Date(b.last_run_at) - new Date(a.last_run_at))
                 .slice(0, 5);
+        });
+
+        const selectedEmployeeWorkflow = computed(() => {
+            return employeeWorkflows.value.find(wf => wf.id === activeWorkflowId.value)
+                || employeeWorkflows.value.find(wf => wf.is_default)
+                || employeeWorkflows.value[0]
+                || null;
         });
 
         const lastAgentMessageIdx = computed(() => {
@@ -158,9 +204,37 @@ const app = createApp({
         const logBody = ref(null);
 
         let ws = null;
+        const wsBySession = {};
         let wsReconnectTimer = null;
         let logTimer = null;
         let activeWsSession = '';
+        let streamRenderTimer = null;
+        let scrollTimer = null;
+
+        function renderStreamingNow() {
+            if (streamRenderTimer) {
+                clearTimeout(streamRenderTimer);
+                streamRenderTimer = null;
+            }
+            streamingHtml.value = streamingText.value ? renderMarkdown(streamingText.value) : '';
+        }
+
+        function scheduleStreamingRender() {
+            if (streamRenderTimer) return;
+            streamRenderTimer = setTimeout(function() {
+                streamRenderTimer = null;
+                renderStreamingNow();
+            }, 80);
+        }
+
+        function clearStreamingState() {
+            if (streamRenderTimer) {
+                clearTimeout(streamRenderTimer);
+                streamRenderTimer = null;
+            }
+            streamingText.value = '';
+            streamingHtml.value = '';
+        }
 
         const displayedMessages = computed(() => {
             // Hide tool messages from main chat flow (they're technical details)
@@ -176,7 +250,7 @@ const app = createApp({
             if (streamingText.value && isThinking.value) {
                 msgs.push({
                     role: 'agent-streaming',
-                    html: renderMarkdown(streamingText.value),
+                    html: streamingHtml.value || escapeHtml(streamingText.value),
                     _originalIdx: -1,
                 });
             }
@@ -205,17 +279,14 @@ const app = createApp({
         }
 
         function scrollToBottom() {
-            // Use multiple ticks to ensure Vue has fully rendered the DOM
-            // before scrolling.  nextTick alone can fire before the browser
-            // has laid out the new content.
-            nextTick(() => {
+            if (scrollTimer) return;
+            scrollTimer = setTimeout(function() {
+                scrollTimer = null;
                 nextTick(() => {
                     const el = chatArea.value;
-                    if (el) {
-                        el.scrollTop = el.scrollHeight;
-                    }
+                    if (el) el.scrollTop = el.scrollHeight;
                 });
-            });
+            }, 50);
         }
 
         function addMessage(role, content) {
@@ -233,13 +304,16 @@ const app = createApp({
 
         function connectWebSocket(sid) {
             activeWsSession = sid;
-            if (ws) {
-                ws.onopen = null;
-                ws.onmessage = null;
-                ws.onerror = null;
-                ws.onclose = null;
-                ws.close();
-                ws = null;
+            const existing = wsBySession[sid];
+            if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+                ws = existing;
+                if (existing.readyState === WebSocket.OPEN) {
+                    wsStatus.value = '已连接';
+                    wsError.value = false;
+                } else {
+                    wsStatus.value = '连接中...';
+                }
+                return;
             }
             if (wsReconnectTimer) {
                 clearTimeout(wsReconnectTimer);
@@ -253,75 +327,118 @@ const app = createApp({
             const wsUrl = `${protocol}//${location.host}/ws/chat/${sid}`;
 
             try {
-                ws = new WebSocket(wsUrl);
+                const sock = new WebSocket(wsUrl);
+                ws = sock;
+                wsBySession[sid] = sock;
+
+                sock.onopen = () => {
+                    if (wsBySession[sid] !== sock) return;
+                    if (activeWsSession === sid) {
+                        wsStatus.value = '已连接';
+                        wsError.value = false;
+                    }
+                };
+
+                sock.onmessage = (event) => {
+                    try {
+                        const payload = JSON.parse(event.data);
+                        if (activeWsSession !== sid) {
+                            handleBackgroundWsMessage(sid, payload);
+                            return;
+                        }
+                        handleWsMessage(payload);
+                    } catch (e) {
+                        console.error('WS parse error:', e);
+                    }
+                };
+
+                sock.onclose = () => {
+                    if (wsBySession[sid] === sock) delete wsBySession[sid];
+                    if (activeWsSession !== sid) return;
+                    wsStatus.value = '已断开';
+                    wsError.value = true;
+                    ws = null;
+                    wsReconnectTimer = setTimeout(() => connectWebSocket(sid), 3000);
+                };
+
+                sock.onerror = () => {
+                    if (activeWsSession !== sid) return;
+                    wsError.value = true;
+                    wsStatus.value = '连接错误';
+                };
             } catch (e) {
                 wsError.value = true;
                 wsStatus.value = '连接失败';
                 wsReconnectTimer = setTimeout(() => connectWebSocket(sid), 3000);
                 return;
             }
-
-            ws.onopen = () => {
-                wsStatus.value = '已连接';
-                wsError.value = false;
-            };
-
-            ws.onmessage = (event) => {
-                // Ignore messages if we've switched to a different session
-                if (activeWsSession !== sid) return;
-                try {
-                    handleWsMessage(JSON.parse(event.data));
-                } catch (e) {
-                    console.error('WS parse error:', e);
-                }
-            };
-
-            ws.onclose = () => {
-                if (activeWsSession !== sid) return;
-                wsStatus.value = '已断开';
-                wsError.value = true;
-                ws = null;
-                wsReconnectTimer = setTimeout(() => connectWebSocket(sid), 3000);
-            };
-
-            ws.onerror = () => {
-                wsError.value = true;
-                wsStatus.value = '连接错误';
-            };
         }
 
-        // Strip thinking/reasoning blocks from streamed text.
-        // Per-delta approach: strip any complete <think>...</think> blocks
-        // (and similar tags).  Cross-delta fragments are handled by buffering
-        // only the portion that starts with a possible opening tag and lacks a
-        // closing tag — everything else is emitted immediately.
+        function closeSessionSocket(sid) {
+            const sock = wsBySession[sid];
+            if (activeWsSession === sid) activeWsSession = '';
+            if (sock) {
+                delete wsBySession[sid];
+                try { sock.close(); } catch (e) {}
+            }
+            if (ws === sock) ws = null;
+        }
+
+        function closeAllSessionSockets() {
+            Object.keys(wsBySession).forEach(closeSessionSocket);
+            ws = null;
+        }
+
+        function handleBackgroundWsMessage(sid, data) {
+            if (!data || !data.type) return;
+            if (data.type === 'done' || data.type === 'error' || data.type === 'session.updated') {
+                loadSessions();
+                if (data.type === 'session.updated' && activeWsSession !== sid) {
+                    closeSessionSocket(sid);
+                }
+            }
+        }
+
         var _thinkBuf = '';
+        var _insideThink = false;
+        const _thinkOpenRe = /<(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)(?:\s[^>]*)?>/i;
+        const _thinkCloseRe = /<\/(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)\s*>/i;
         function _filterThink(text) {
             if (!text) return '';
-            _thinkBuf += text;
-            // Strip complete think/reasoning blocks: <think>...</think>,
-            // <thinking>...</thinking>, <reasoning>...</reasoning>,
-            // <thought>...</thought>, <REASONING_SCRATCHPAD>...</REASONING_SCRATCHPAD>
-            var cleaned = _thinkBuf.replace(
-                /<(?:\/?)(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)(?: [^>]*)?>/gi,
-                ''
-            );
-            // If the buffer ends with a potential opening tag (starts with '<'),
-            // keep that trailing fragment for the next delta so it can be completed
-            // and stripped.  Otherwise, emit everything.
-            var lastLt = cleaned.lastIndexOf('<');
-            if (lastLt >= 0 && !cleaned.slice(lastLt).includes('>')) {
-                // Trailing '<...' without '>' — hold it back
-                var result = cleaned.slice(0, lastLt);
-                _thinkBuf = cleaned.slice(lastLt);
-                return result;
-            }
+            let input = _thinkBuf + text;
             _thinkBuf = '';
-            return cleaned;
+            let output = '';
+            while (input) {
+                if (_insideThink) {
+                    const closeIdx = input.search(_thinkCloseRe);
+                    if (closeIdx < 0) return output;
+                    const closeMatch = input.slice(closeIdx).match(_thinkCloseRe);
+                    input = input.slice(closeIdx + closeMatch[0].length);
+                    _insideThink = false;
+                    continue;
+                }
+                const openIdx = input.search(_thinkOpenRe);
+                if (openIdx < 0) {
+                    const lastLt = input.lastIndexOf('<');
+                    if (lastLt >= 0 && !input.slice(lastLt).includes('>')) {
+                        output += input.slice(0, lastLt);
+                        _thinkBuf = input.slice(lastLt);
+                    } else {
+                        output += input;
+                    }
+                    return output;
+                }
+                const openMatch = input.slice(openIdx).match(_thinkOpenRe);
+                output += input.slice(0, openIdx);
+                input = input.slice(openIdx + openMatch[0].length);
+                _insideThink = true;
+            }
+            return output;
         }
 
         function _resetThinkFilter() {
             _thinkBuf = '';
+            _insideThink = false;
         }
 
         function handleWsMessage(data) {
@@ -329,6 +446,7 @@ const app = createApp({
                 case 'delta': {
                     var filtered = _filterThink(data.text || '');
                     streamingText.value += filtered;
+                    scheduleStreamingRender();
                     scrollToBottom();
                     break;
                 }
@@ -344,12 +462,10 @@ const app = createApp({
                         addMessage('tool', toolMsg);
                     }
 
-                    // When a new tool call starts, discard the thinking text (streamingText)
-                    // so it doesn't appear in the final output. Only the final result matters.
                     if (event === 'tool.start') {
-                        if (streamingText.value.trim()) {
-                            streamingText.value = '';
-                        }
+                        // Tool events belong in the collapsible detail area. Do not clear
+                        // already streamed answer text; some models draft useful answer
+                        // content before or between tool calls.
                         _resetThinkFilter();
                     }
                     break;
@@ -360,7 +476,7 @@ const app = createApp({
                         isThinking.value = true;
                         // Only clear streamingText on first thinking signal, not mid-stream
                         if (!streamingText.value) {
-                            streamingText.value = '';
+                            clearStreamingState();
                         }
                     } else if (data.text === 'interrupting') {
                         wsStatus.value = '正在停止...';
@@ -372,6 +488,17 @@ const app = createApp({
                     _resetThinkFilter();
 
                     const finalText = data.text || '';
+                    renderStreamingNow();
+                    let committedText = streamingText.value || '';
+                    if (finalText && finalText !== '(no response)') {
+                        const streamed = committedText.trim();
+                        const finalTrimmed = finalText.trim();
+                        if (!streamed) {
+                            committedText = finalText;
+                        } else if (finalTrimmed && !streamed.includes(finalTrimmed) && !finalTrimmed.includes(streamed)) {
+                            committedText = committedText.replace(/\s*$/, '') + '\n\n' + finalText;
+                        }
+                    }
 
                     // Commit the streamed/final text first.
                     // We defer clearing streamingText + isThinking to nextTick
@@ -380,16 +507,13 @@ const app = createApp({
                     // computed) is torn down.  Otherwise the diff between
                     // "remove agent-streaming" and "add agent" can produce
                     // a visible white flash.
-                    const hasStream = streamingText.value.trim();
-                    if (hasStream) {
-                        addMessage('agent', streamingText.value);
-                    } else if (finalText && finalText !== '(no response)') {
-                        addMessage('agent', finalText);
+                    if (committedText.trim()) {
+                        addMessage('agent', committedText);
                     }
 
                     // Defer state cleanup to after Vue renders the new message
                     nextTick(function() {
-                        streamingText.value = '';
+                        clearStreamingState();
                         isThinking.value = false;
                         scrollToBottom();
                     });
@@ -409,7 +533,7 @@ const app = createApp({
                     addMessage('system', '[ERROR] ' + data.text);
                     nextTick(function() {
                         isThinking.value = false;
-                        streamingText.value = '';
+                        clearStreamingState();
                     });
                     break;
 
@@ -442,12 +566,14 @@ const app = createApp({
 
             let msgText = text;
             if (uploadedFiles.value.length > 0) {
-                const fileNames = uploadedFiles.value.map(f => f.filename).join(', ');
-                msgText = text + '\n\n[上传的文件: ' + fileNames + ']';
+                const fileLines = uploadedFiles.value.map(function(f) {
+                    return '- ' + f.filename + ' (' + f.path + ')';
+                }).join('\n');
+                msgText = text + '\n\n[\u4e0a\u4f20\u7684\u6587\u4ef6]\n' + fileLines + '\n\u8bf7\u5728\u9700\u8981\u8bfb\u53d6\u6587\u4ef6\u65f6\u4f7f\u7528\u62ec\u53f7\u4e2d\u7684\u672c\u5730\u8def\u5f84\u3002';
             }
 
             isThinking.value = true;
-            streamingText.value = '';
+            clearStreamingState();
             ws.send(JSON.stringify({ message: msgText }));
             inputText.value = '';
             uploadedFiles.value = [];
@@ -579,9 +705,9 @@ const app = createApp({
                 messages.value = [];
                 Object.keys(sessionMessagesCache).forEach(function(k) { delete sessionMessagesCache[k]; });
                 currentSessionId.value = '';
-                streamingText.value = '';
+                clearStreamingState();
                 isThinking.value = false;
-                if (ws) { ws.close(); ws = null; }
+                closeAllSessionSockets();
                 await newSession();
             } catch (e) {
                 alert('清除失败：' + (e.message || '网络错误'));
@@ -605,7 +731,7 @@ const app = createApp({
                     await fetch('/api/session/' + currentSessionId.value, { method: 'DELETE' });
                     sessions.value = [];
                     currentSessionId.value = '';
-                    if (ws) { ws.close(); ws = null; }
+                    closeAllSessionSockets();
                     await newSession();
                 }
                 alert('已清除' + label + '的聊天记录');
@@ -638,10 +764,64 @@ const app = createApp({
             }
         }
 
+        async function ensureEmployeeSession(empOrId) {
+            let emp = typeof empOrId === 'object'
+                ? empOrId
+                : employees.value.find(e => e.id === empOrId) || (currentEmployee.value && currentEmployee.value.id === empOrId ? currentEmployee.value : null);
+            if (!emp) return '';
+            let sid = emp.session_id || '';
+            if (!sid || sid === emp.id) {
+                const resp = await fetch('/api/session/new', { method: 'POST' });
+                const data = await resp.json();
+                sid = data.session_id;
+                await fetch('/api/employees/' + encodeURIComponent(emp.id), {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sid }),
+                });
+                emp.session_id = sid;
+                if (currentEmployee.value && currentEmployee.value.id === emp.id) {
+                    currentEmployee.value.session_id = sid;
+                }
+                if (editingEmployee.value && editingEmployee.value.id === emp.id) {
+                    editingEmployee.value.session_id = sid;
+                }
+                await loadEmployees();
+                await loadSessions();
+            }
+            return sid;
+        }
+
+        async function waitForWsOpen(timeoutMs) {
+            const deadline = Date.now() + (timeoutMs || 2500);
+            while (Date.now() < deadline) {
+                if (ws && ws.readyState === WebSocket.OPEN) return true;
+                await new Promise(r => setTimeout(r, 50));
+            }
+            return ws && ws.readyState === WebSocket.OPEN;
+        }
+
+        async function sendPromptToActiveSession(prompt) {
+            const ok = await waitForWsOpen(2500);
+            if (!ok) {
+                addMessage('system', '[ERROR] \u672a\u8fde\u63a5\u5230\u670d\u52a1\u5668');
+                return false;
+            }
+            addMessage('user', prompt);
+            isThinking.value = true;
+            clearStreamingState();
+            _resetThinkFilter();
+            ws.send(JSON.stringify({ message: prompt }));
+            scrollToBottom();
+            return true;
+        }
+
         async function switchToTeam() {
             activeView.value = 'team';
             currentEmployee.value = null;
             isEmployeeChatting.value = false;
+            employeeTasks.value = [];
+            activeEmployeeTask.value = null;
             // Don't switch session here - wait for user to pick an employee
         }
 
@@ -649,27 +829,11 @@ const app = createApp({
             isEmployeeChatting.value = true;
             currentEmployee.value = emp;
             editingEmployee.value = emp;
+            activeEmployeeId.value = emp.id;
 
-            // Use or create session for this employee
-            var sid = emp.session_id;
-            if (!sid || sid === emp.id) {
-                // First time: create new independent session
-                const resp = await fetch('/api/session/new', { method: 'POST' });
-                const data = await resp.json();
-                sid = data.session_id;
-                // Persist session_id to employee
-                try {
-                    await fetch('/api/employees/' + encodeURIComponent(emp.id), {
-                        method: 'PUT',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ session_id: sid }),
-                    });
-                    emp.session_id = sid;
-                } catch (e) { /* non-fatal */ }
-                await loadSessions();
-            }
-
-            // Switch to employee's session (reuses main session mechanism)
+            const sid = await ensureEmployeeSession(emp);
+            await loadEmployeeWorkflows(emp);
+            await loadEmployeeTasks(emp.id);
             activeView.value = 'team';
             await switchSession(sid);
         }
@@ -692,8 +856,17 @@ const app = createApp({
 
         async function triggerCurrentEmployee() {
             if (currentEmployee.value) {
-                await triggerEmployee(currentEmployee.value.id);
+                await triggerEmployee(currentEmployee.value.id, activeWorkflowId.value);
             }
+        }
+
+        async function prepareEmployeeWorkflow(workflowId) {
+            if (!currentEmployee.value) return;
+            await loadEmployeeWorkflows(currentEmployee.value);
+            if (workflowId) selectWorkflow(workflowId);
+            employeeTaskBrief.value = '';
+            refreshWorkflowSummary();
+            showWorkflowConfirm.value = true;
         }
 
         async function createEmployee() {
@@ -776,34 +949,95 @@ const app = createApp({
             }
         }
 
-        async function triggerEmployee(empId) {
+        async function triggerEmployee(empId, workflowId) {
             try {
+                const sid = await ensureEmployeeSession(empId);
+                const wf = selectedEmployeeWorkflow.value || {};
+                const brief = (employeeTaskBrief.value || '').trim();
+                const taskMessage = brief || ('\u8bf7\u51c6\u5907\u8fd9\u6b21\u5de5\u4f5c\uff1a' + (wf.name || '\u5e38\u7528\u4efb\u52a1'));
                 const resp = await fetch('/api/employees/' + encodeURIComponent(empId) + '/trigger', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ message: '开始执行工作任务' }),
+                    body: JSON.stringify({
+                        message: taskMessage,
+                        workflow_id: workflowId || activeWorkflowId.value || '',
+                    }),
                 });
                 const data = await resp.json();
                 if (data.ok) {
-                    // Switch to chat view with this employee's session
-                    const sid = data.session_id || empId;
-                    activeView.value = 'chat';
-                    // Check if we need a new session for this employee
-                    const existing = sessions.value.find(s => s.session_id === sid);
-                    if (existing) {
-                        switchSession(sid);
-                    } else {
-                        // Create session first
-                        const resp2 = await fetch('/api/session/new', { method: 'POST' });
-                        const data2 = await resp2.json();
-                        await loadSessions();
-                        switchSession(data2.session_id);
-                    }
+                    if (data.task) activeEmployeeTask.value = data.task;
+                    await loadEmployeeTasks(empId);
+                    activeView.value = currentEmployee.value && currentEmployee.value.id === empId ? 'team' : 'chat';
+                    await switchSession(data.session_id || sid);
+                    await sendPromptToActiveSession(data.message || '\u5f00\u59cb\u6267\u884c\u5de5\u4f5c\u4efb\u52a1');
+                    employeeTaskBrief.value = '';
                 } else {
-                    alert('触发失败：' + (data.error || '未知错误'));
+                    alert('\u89e6\u53d1\u5931\u8d25\uff1a' + (data.error || '\u672a\u77e5\u9519\u8bef'));
                 }
             } catch (e) {
-                alert('触发失败：' + (e.message || '网络错误'));
+                alert('\u89e6\u53d1\u5931\u8d25\uff1a' + (e.message || '\u7f51\u7edc\u9519\u8bef'));
+            }
+        }
+
+        function pickActiveEmployeeTask(tasks) {
+            const list = Array.isArray(tasks) ? tasks : [];
+            return list.find(t => t.status === 'planning')
+                || list.find(t => t.status === 'running')
+                || list[0]
+                || null;
+        }
+
+        async function loadEmployeeTasks(empId) {
+            const id = empId || activeEmployeeId.value || (currentEmployee.value && currentEmployee.value.id);
+            if (!id) return [];
+            try {
+                const resp = await fetch('/api/employees/' + encodeURIComponent(id) + '/tasks?limit=12');
+                const data = await resp.json();
+                if (data.ok) {
+                    employeeTasks.value = data.tasks || [];
+                    activeEmployeeTask.value = pickActiveEmployeeTask(employeeTasks.value);
+                    return employeeTasks.value;
+                }
+            } catch (e) {
+                console.warn('Load employee tasks failed:', e);
+            }
+            return [];
+        }
+
+        function employeeTaskStatusText(status) {
+            if (status === 'planning') return '\u7b49\u5f85\u786e\u8ba4\u8ba1\u5212';
+            if (status === 'running') return '\u6267\u884c\u4e2d';
+            if (status === 'done') return '\u5df2\u5b8c\u6210';
+            if (status === 'failed') return '\u672a\u5b8c\u6210';
+            return '\u51c6\u5907\u4e2d';
+        }
+
+        async function confirmActiveEmployeeTask() {
+            const emp = currentEmployee.value;
+            const task = activeEmployeeTask.value;
+            if (!emp || !task || isConfirmingEmployeeTask.value) return;
+            isConfirmingEmployeeTask.value = true;
+            try {
+                const sid = await ensureEmployeeSession(emp.id);
+                const resp = await fetch('/api/employees/' + encodeURIComponent(emp.id) + '/tasks/' + encodeURIComponent(task.id) + '/confirm', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ note: '' }),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    activeEmployeeTask.value = data.task || task;
+                    await loadEmployeeTasks(emp.id);
+                    activeView.value = 'team';
+                    await switchSession(data.session_id || sid);
+                    await sendPromptToActiveSession(data.message);
+                } else {
+                    alert('\u786e\u8ba4\u5931\u8d25\uff1a' + (data.error || '\u672a\u77e5\u9519\u8bef'));
+                }
+            } catch (e) {
+                alert('\u786e\u8ba4\u5931\u8d25\uff1a' + (e.message || '\u7f51\u7edc\u9519\u8bef'));
+            } finally {
+                isConfirmingEmployeeTask.value = false;
             }
         }
 
@@ -936,6 +1170,7 @@ const app = createApp({
                     var data = await resp.json();
                     if (data.ok) uploadResults.push(data.filename);
                 }
+                await ensureEmployeeSession(activeEmployeeId.value);
                 // Start learning
                 var learnResp = await fetch('/api/employees/' + encodeURIComponent(activeEmployeeId.value) + '/learn', {
                     method: 'POST',
@@ -947,25 +1182,10 @@ const app = createApp({
                     showEditEmployeeDialog.value = false;
                     editEmployeeFiles.value = [];
                     // Send learning message to employee session
-                    var sid = learnData.session_id || activeEmployeeId.value;
-                    var existing = sessions.value.find(function(s) { return s.session_id === sid; });
-                    if (existing) {
-                        switchSession(sid);
-                    } else {
-                        var newResp = await fetch('/api/session/new', { method: 'POST' });
-                        var newData = await newResp.json();
-                        await loadSessions();
-                        switchSession(newData.session_id);
-                    }
-                    activeView.value = 'chat';
-                    await new Promise(function(r) { setTimeout(r, 500); });
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        addMessage('user', learnData.message);
-                        isThinking.value = true;
-                        streamingText.value = '';
-                        ws.send(JSON.stringify({ message: learnData.message }));
-                        scrollToBottom();
-                    }
+                    var sid = learnData.session_id || await ensureEmployeeSession(activeEmployeeId.value);
+                    activeView.value = currentEmployee.value && currentEmployee.value.id === activeEmployeeId.value ? 'team' : 'chat';
+                    await switchSession(sid);
+                    await sendPromptToActiveSession(learnData.message);
                 } else {
                     alert('启动学习失败：' + (learnData.error || '未知错误'));
                 }
@@ -976,8 +1196,95 @@ const app = createApp({
         }
 
         // ===== Workflow functions =====
-        function openWorkflowDesigner(emp) {
-            workflowSteps.value = emp.work_steps || '';
+        function normalizeWorkflowList(emp) {
+            const list = Array.isArray(emp && emp.workflows) ? emp.workflows.slice() : [];
+            if (list.length === 0) {
+                list.push({
+                    id: 'wf-default',
+                    name: '\u65e5\u5e38\u5de5\u4f5c',
+                    description: (emp && (emp.work_content || emp.role)) || '',
+                    steps: (emp && emp.work_steps) || '',
+                    questions: '\u5f00\u5de5\u524d\u5148\u95ee\u6e05\u695a\u76ee\u6807\u3001\u7d20\u6750\u3001\u6807\u51c6\u548c\u8f93\u51fa\u8981\u6c42\u3002',
+                    is_default: true,
+                    enabled: true,
+                });
+            }
+            if (!list.some(wf => wf.is_default)) list[0].is_default = true;
+            return list;
+        }
+
+        function syncWorkflowEditor() {
+            const wf = selectedEmployeeWorkflow.value || {};
+            workflowName.value = wf.name || '';
+            workflowDescription.value = wf.description || '';
+            workflowQuestions.value = wf.questions || '';
+            workflowSteps.value = wf.steps || '';
+        }
+
+        function refreshWorkflowSummary() {
+            const wf = selectedEmployeeWorkflow.value;
+            const emp = currentEmployee.value || editingEmployee.value || {};
+            const wc = emp.work_content || '';
+            if (wf) {
+                workflowSummary.value =
+                    '**\u8fd9\u6b21\u5e38\u7528\u4efb\u52a1\uff1a** ' + (wf.name || '\u672a\u547d\u540d') +
+                    '\n\n**\u9002\u7528\u573a\u666f\uff1a** ' + (wf.description || wc || '\u672a\u8bbe\u5b9a') +
+                    '\n\n**\u5f00\u5de5\u524d\u4f1a\u5148\u95ee\uff1a** ' + (wf.questions || '\u7531\u5458\u5de5\u6839\u636e\u4efb\u52a1\u4e3b\u52a8\u63d0\u95ee') +
+                    '\n\n**\u53c2\u8003\u6b65\u9aa4\uff1a**\n' + (wf.steps || '\u7531\u5458\u5de5\u5148\u751f\u6210\u672c\u6b21\u8be6\u7ec6\u8ba1\u5212');
+            } else {
+                workflowSummary.value = '**\u5de5\u4f5c\u5185\u5bb9\uff1a** ' + (wc || '\u672a\u8bbe\u5b9a');
+            }
+        }
+
+        function selectWorkflow(workflowId) {
+            activeWorkflowId.value = workflowId || '';
+            syncWorkflowEditor();
+            refreshWorkflowSummary();
+        }
+
+        async function loadEmployeeWorkflows(emp) {
+            const empId = typeof emp === 'string' ? emp : emp && emp.id;
+            if (!empId) return [];
+            let list = [];
+            try {
+                const resp = await fetch('/api/employees/' + encodeURIComponent(empId) + '/workflows');
+                const data = await resp.json();
+                if (data.ok && Array.isArray(data.workflows)) list = data.workflows;
+            } catch (e) {
+                console.warn('Load workflows failed:', e);
+            }
+            if (list.length === 0) {
+                const localEmp = typeof emp === 'object' ? emp : employees.value.find(item => item.id === empId);
+                list = normalizeWorkflowList(localEmp || currentEmployee.value || {});
+            }
+            employeeWorkflows.value = list;
+            if (!list.some(wf => wf.id === activeWorkflowId.value)) {
+                const def = list.find(wf => wf.is_default) || list[0];
+                activeWorkflowId.value = def ? def.id : '';
+            }
+            syncWorkflowEditor();
+            return list;
+        }
+
+        function addWorkflowDraft() {
+            const draft = {
+                id: '__new__' + Date.now(),
+                name: '\u65b0\u5e38\u7528\u4efb\u52a1',
+                description: '',
+                questions: '\u5f00\u5de5\u524d\u5148\u95ee\u6e05\u695a\u76ee\u6807\u3001\u7d20\u6750\u3001\u6807\u51c6\u548c\u8f93\u51fa\u8981\u6c42\u3002',
+                steps: '',
+                enabled: true,
+                is_default: employeeWorkflows.value.length === 0,
+            };
+            employeeWorkflows.value.push(draft);
+            selectWorkflow(draft.id);
+        }
+
+        async function openWorkflowDesigner(emp) {
+            activeEmployeeId.value = emp.id;
+            currentEmployee.value = (!currentEmployee.value || currentEmployee.value.id !== emp.id) ? emp : currentEmployee.value;
+            editingEmployee.value = emp;
+            await loadEmployeeWorkflows(emp);
             showWorkflowDialog.value = true;
         }
 
@@ -988,30 +1295,16 @@ const app = createApp({
         async function generateWorkflowWithAI() {
             if (!activeEmployeeId.value) return;
             try {
+                await ensureEmployeeSession(activeEmployeeId.value);
                 var resp = await fetch('/api/employees/' + encodeURIComponent(activeEmployeeId.value) + '/generate-workflow', { method: 'POST' });
                 var data = await resp.json();
                 if (data.ok) {
                     // Send to chat to let AI generate
                     showWorkflowDialog.value = false;
-                    var sid = data.session_id || activeEmployeeId.value;
-                    var existing = sessions.value.find(function(s) { return s.session_id === sid; });
-                    if (existing) {
-                        switchSession(sid);
-                    } else {
-                        var newResp = await fetch('/api/session/new', { method: 'POST' });
-                        var newData = await newResp.json();
-                        await loadSessions();
-                        switchSession(newData.session_id);
-                    }
-                    activeView.value = 'chat';
-                    await new Promise(function(r) { setTimeout(r, 500); });
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        addMessage('user', data.message);
-                        isThinking.value = true;
-                        streamingText.value = '';
-                        ws.send(JSON.stringify({ message: data.message }));
-                        scrollToBottom();
-                    }
+                    var sid = data.session_id || await ensureEmployeeSession(activeEmployeeId.value);
+                    activeView.value = currentEmployee.value && currentEmployee.value.id === activeEmployeeId.value ? 'team' : 'chat';
+                    await switchSession(sid);
+                    await sendPromptToActiveSession(data.message);
                 } else {
                     alert('生成失败：' + (data.error || '未知错误'));
                 }
@@ -1022,21 +1315,36 @@ const app = createApp({
 
         async function saveWorkflowSettings() {
             try {
-                var resp = await fetch('/api/employees/' + encodeURIComponent(activeEmployeeId.value), {
-                    method: 'PUT',
+                const payload = {
+                    name: workflowName.value || '\u5e38\u7528\u4efb\u52a1',
+                    description: workflowDescription.value || '',
+                    questions: workflowQuestions.value || '',
+                    steps: workflowSteps.value || '',
+                };
+                const isNew = !activeWorkflowId.value || activeWorkflowId.value.indexOf('__new__') === 0;
+                var resp = await fetch(
+                    '/api/employees/' + encodeURIComponent(activeEmployeeId.value) + '/workflows' +
+                    (isNew ? '' : '/' + encodeURIComponent(activeWorkflowId.value)),
+                    {
+                    method: isNew ? 'POST' : 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ work_steps: workflowSteps.value }),
+                    body: JSON.stringify(payload),
                 });
                 var data = await resp.json();
                 if (data.ok) {
-                    showWorkflowDialog.value = false;
+                    employeeWorkflows.value = data.workflows || employeeWorkflows.value;
+                    if (data.workflow && data.workflow.id) activeWorkflowId.value = data.workflow.id;
                     if (editingEmployee.value && editingEmployee.value.id === activeEmployeeId.value) {
+                        editingEmployee.value.workflows = employeeWorkflows.value;
                         editingEmployee.value.work_steps = workflowSteps.value;
                     }
                     if (currentEmployee.value && currentEmployee.value.id === activeEmployeeId.value) {
+                        currentEmployee.value.workflows = employeeWorkflows.value;
                         currentEmployee.value.work_steps = workflowSteps.value;
                     }
                     await loadEmployees();
+                    syncWorkflowEditor();
+                    showWorkflowDialog.value = false;
                 } else {
                     alert('保存失败：' + (data.error || '未知错误'));
                 }
@@ -1045,18 +1353,102 @@ const app = createApp({
             }
         }
 
+        async function deleteWorkflowSettings() {
+            if (!activeWorkflowId.value) return;
+            if (employeeWorkflows.value.length <= 1) {
+                alert('\u81f3\u5c11\u4fdd\u7559\u4e00\u4e2a\u5e38\u7528\u4efb\u52a1');
+                return;
+            }
+            const id = activeWorkflowId.value;
+            if (id.indexOf('__new__') === 0) {
+                employeeWorkflows.value = employeeWorkflows.value.filter(wf => wf.id !== id);
+                const next = employeeWorkflows.value.find(wf => wf.is_default) || employeeWorkflows.value[0];
+                activeWorkflowId.value = next ? next.id : '';
+                syncWorkflowEditor();
+                return;
+            }
+            try {
+                const resp = await fetch('/api/employees/' + encodeURIComponent(activeEmployeeId.value) + '/workflows/' + encodeURIComponent(id), { method: 'DELETE' });
+                const data = await resp.json();
+                if (data.ok) {
+                    employeeWorkflows.value = data.workflows || [];
+                    const next = employeeWorkflows.value.find(wf => wf.is_default) || employeeWorkflows.value[0];
+                    activeWorkflowId.value = next ? next.id : '';
+                    if (currentEmployee.value && currentEmployee.value.id === activeEmployeeId.value) {
+                        currentEmployee.value.workflows = employeeWorkflows.value;
+                    }
+                    await loadEmployees();
+                    syncWorkflowEditor();
+                } else {
+                    alert('\u5220\u9664\u5931\u8d25\uff1a' + (data.error || '\u672a\u77e5\u9519\u8bef'));
+                }
+            } catch (e) {
+                alert('\u5220\u9664\u5931\u8d25\uff1a' + (e.message || '\u7f51\u7edc\u9519\u8bef'));
+            }
+        }
+
+        function latestEmployeeResultText() {
+            for (let i = messages.value.length - 1; i >= 0; i--) {
+                const msg = messages.value[i] || {};
+                if (msg.role === 'agent' || msg.role === 'assistant') {
+                    return msg.content || '';
+                }
+            }
+            return '';
+        }
+
+        function openWorkflowCaptureDialog(mode) {
+            if (!currentEmployee.value) return;
+            const wf = selectedEmployeeWorkflow.value || {};
+            workflowCaptureMode.value = mode || 'experience';
+            workflowCaptureName.value = wf.name ? wf.name + '\u7684\u6539\u8fdb\u505a\u6cd5' : '\u8fd9\u6b21\u7684\u597d\u505a\u6cd5';
+            workflowCaptureNotes.value = '';
+            showWorkflowCaptureDialog.value = true;
+        }
+
+        function closeWorkflowCaptureDialog() {
+            showWorkflowCaptureDialog.value = false;
+            isCapturingWorkflow.value = false;
+        }
+
+        async function saveWorkflowCapture() {
+            if (!currentEmployee.value || isCapturingWorkflow.value) return;
+            isCapturingWorkflow.value = true;
+            try {
+                const resp = await fetch('/api/employees/' + encodeURIComponent(currentEmployee.value.id) + '/workflows/capture', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        mode: workflowCaptureMode.value,
+                        workflow_id: activeWorkflowId.value || '',
+                        task_id: activeEmployeeTask.value ? activeEmployeeTask.value.id : '',
+                        name: workflowCaptureName.value || '\u8fd9\u6b21\u7684\u597d\u505a\u6cd5',
+                        notes: workflowCaptureNotes.value || '',
+                        result: latestEmployeeResultText(),
+                    }),
+                });
+                const data = await resp.json();
+                if (data.ok) {
+                    employeeWorkflows.value = data.workflows || employeeWorkflows.value;
+                    if (currentEmployee.value) currentEmployee.value.workflows = employeeWorkflows.value;
+                    if (data.task) activeEmployeeTask.value = data.task;
+                    if (currentEmployee.value) await loadEmployeeTasks(currentEmployee.value.id);
+                    await loadEmployees();
+                    closeWorkflowCaptureDialog();
+                } else {
+                    alert('\u4fdd\u5b58\u5931\u8d25\uff1a' + (data.error || '\u672a\u77e5\u9519\u8bef'));
+                }
+            } catch (e) {
+                alert('\u4fdd\u5b58\u5931\u8d25\uff1a' + (e.message || '\u7f51\u7edc\u9519\u8bef'));
+            } finally {
+                isCapturingWorkflow.value = false;
+            }
+        }
+
         // ===== Trigger with confirmation =====
         async function triggerEmployeeWithConfirm() {
             if (!currentEmployee.value) return;
-            var emp = currentEmployee.value;
-            var wc = emp.work_content || '';
-            var ws = emp.work_steps || '';
-            if (wc || ws) {
-                workflowSummary.value = '**工作内容：** ' + (wc || '未设定') + '\n\n**工作步骤：** ' + (ws || '未设定');
-                showWorkflowConfirm.value = true;
-            } else {
-                await triggerCurrentEmployee();
-            }
+            await prepareEmployeeWorkflow(activeWorkflowId.value);
         }
 
         function confirmTrigger() {
@@ -1066,6 +1458,7 @@ const app = createApp({
 
         function cancelTrigger() {
             showWorkflowConfirm.value = false;
+            employeeTaskBrief.value = '';
         }
 
         // ===== Employee context menu =====
@@ -1145,7 +1538,7 @@ const app = createApp({
 
             addMessage('user', prompt + '\n' + context);
             isThinking.value = true;
-            streamingText.value = '';
+            clearStreamingState();
             ws.send(JSON.stringify({ message: prompt + '\n' + context }));
             scrollToBottom();
         }
@@ -1174,7 +1567,7 @@ const app = createApp({
 
             addMessage('user', prompt);
             isThinking.value = true;
-            streamingText.value = '';
+            clearStreamingState();
             ws.send(JSON.stringify({ message: prompt }));
             scrollToBottom();
         }
@@ -1269,7 +1662,7 @@ const app = createApp({
             marketLoading.value = false;
         }
 
-        async function installSkill(sk) {
+        async function installSkill(sk, evt) {
             // sk is the full skill object from marketResults
             const name = sk.name || '';
             if (!name) return;
@@ -1280,7 +1673,7 @@ const app = createApp({
             const identifier = sk.identifier || name;
 
             // Show installing state
-            const btn = event.target;
+            const btn = evt ? evt.target : null;
             if (btn) {
                 btn.textContent = '安装中...';
                 btn.disabled = true;
@@ -1356,15 +1749,12 @@ const app = createApp({
             try {
                 await fetch('/api/session/' + sid, { method: 'DELETE' });
                 if (sid === currentSessionId.value) {
-                    streamingText.value = '';
+                    clearStreamingState();
                     isThinking.value = false;
                     currentSessionId.value = '';
                     messages.value = [];
                     delete sessionMessagesCache[sid];
-                    if (ws) {
-                        ws.close();
-                        ws = null;
-                    }
+                    closeSessionSocket(sid);
                 }
                 await loadSessions();
                 if (sessions.value.length > 0 && (!currentSessionId.value || sid === currentSessionId.value)) {
@@ -1413,13 +1803,27 @@ const app = createApp({
             }
 
             currentSessionId.value = sid;
-            streamingText.value = '';
+            clearStreamingState();
             isThinking.value = false;
             await loadSessionHistory(sid);
             connectWebSocket(sid);
+            await refreshSessionRunningState(sid);
 
             const s = sessions.value.find(item => item.session_id === sid);
             currentTitle.value = s ? (s.title || '新对话') : '新对话';
+        }
+
+        async function refreshSessionRunningState(sid) {
+            try {
+                const resp = await fetch('/api/session/' + encodeURIComponent(sid) + '/status');
+                const data = await resp.json();
+                if (data.ok && sid === currentSessionId.value) {
+                    isThinking.value = !!data.running;
+                    if (!data.running) clearStreamingState();
+                }
+            } catch (e) {
+                console.warn('Session status failed:', e);
+            }
         }
 
         // Remember scroll position per session
@@ -1617,7 +2021,7 @@ const app = createApp({
 
         onBeforeUnmount(function() {
             activeWsSession = '';
-            if (ws) ws.close();
+            closeAllSessionSockets();
             if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
             stopLogPolling();
         });
@@ -1692,11 +2096,13 @@ const app = createApp({
             loadFeatured,
             searchMarket,
             installSkill,
+            ensureEmployeeSession,
             viewMarketSkillDetail,
             chatArea,
             inputEl,
             fileInput,
             logBody,
+            renderMarkdown,
             formatDate,
             sendMessage,
             stopCurrentResponse,
@@ -1728,6 +2134,21 @@ const app = createApp({
             workflowSteps,
             showWorkflowConfirm,
             workflowSummary,
+            employeeWorkflows,
+            activeWorkflowId,
+            workflowName,
+            workflowDescription,
+            workflowQuestions,
+            employeeTaskBrief,
+            showWorkflowCaptureDialog,
+            workflowCaptureMode,
+            workflowCaptureName,
+            workflowCaptureNotes,
+            isCapturingWorkflow,
+            employeeTasks,
+            activeEmployeeTask,
+            isConfirmingEmployeeTask,
+            selectedEmployeeWorkflow,
             empContextMenu,
             loadEmployees,
             switchToTeam,
@@ -1736,6 +2157,10 @@ const app = createApp({
             handleEmpKeydown,
             stopEmpResponse,
             triggerCurrentEmployee,
+            prepareEmployeeWorkflow,
+            loadEmployeeTasks,
+            employeeTaskStatusText,
+            confirmActiveEmployeeTask,
             createEmployee,
             startEditEmployee,
             saveEmployee,
@@ -1748,8 +2173,15 @@ const app = createApp({
             startLearningNow,
             openWorkflowDesigner,
             closeWorkflowDialog,
+            loadEmployeeWorkflows,
+            selectWorkflow,
+            addWorkflowDraft,
             generateWorkflowWithAI,
             saveWorkflowSettings,
+            deleteWorkflowSettings,
+            openWorkflowCaptureDialog,
+            closeWorkflowCaptureDialog,
+            saveWorkflowCapture,
             triggerEmployeeWithConfirm,
             confirmTrigger,
             cancelTrigger,
