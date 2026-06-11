@@ -316,7 +316,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 .emoji-picker { position:relative; }
 .emoji-picker-current { display:inline-flex;align-items:center;justify-content:center;width:48px;height:40px;font-size:26px;border:1px solid var(--border);border-radius:8px;cursor:pointer;background:#fff;transition:border-color .15s; user-select:none; }
 .emoji-picker-current:hover { border-color:var(--blue); }
-.emoji-picker-grid { position:absolute;top:calc(100% + 4px);left:0;z-index:400;display:grid;grid-template-columns:repeat(8,1fr);gap:4px;padding:10px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.15);width:280px; }
+.emoji-picker-grid { position:absolute;top:calc(100% + 4px);left:0;z-index:400;display:grid;grid-template-columns:repeat(8,1fr);gap:4px;padding:10px;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 24px rgba(0,0,0,0.15);width:280px;max-height:320px;overflow-y:auto; }
 .emoji-option { display:flex;align-items:center;justify-content:center;width:32px;height:32px;font-size:22px;cursor:pointer;border-radius:6px;transition:background .1s; user-select:none; }
 .emoji-option:hover { background:rgba(200,180,155,0.2); }
 .emoji-option.active { background:var(--accent-light); outline:2px solid var(--accent); }
@@ -622,7 +622,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                 </div>
                 <template v-for="(msg, idx) in displayedMessages" :key="'emp-'+idx">
                     <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
-                        <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
+                        <span class="msg-avatar" style="display:inline-flex;align-items:center;justify-content:center;font-size:18px;background:var(--surface2);border-radius:50%;flex-shrink:0;width:32px;height:32px;">{{ (currentEmployee && currentEmployee.emoji) || '🤖' }}</span>
                         <div>
                             <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
                         </div>
@@ -1028,6 +1028,6 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
     </template>
 </div>
 
-<script src="/static/app.js?v=36"></script>
+<script src="/static/app.js?v=37"></script>
 </body>
 </html>
