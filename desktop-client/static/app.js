@@ -137,7 +137,7 @@ const app = createApp({
         const empContextMenu = ref({ visible: false, x: 0, y: 0, emp: null });
         const showEmojiPicker = ref(false);
         const showEditEmojiPicker = ref(false);
-        const emojiOptions = ['😊','😎','🤓','🧑‍💼','👩‍💻','👨‍🏫','🧪','🎨','📊','🔧','🚀','💡','🌟','⭐','🐴','🦊','🐱','🐶','🐼','🦁','🐸','🦄','🌈','☀️','🌙','🍀','🌺','🎵','📚','💻','🎮','🎯','✨'];
+        const emojiOptions = ['👩‍💼','👨‍💼','👩‍💻','👨‍💻','👩‍🎨','👨‍🎨','👩‍🔬','👨‍🔬','👩‍🏫','👨‍🏫','👩‍🍳','👨‍🍳','👩‍🔧','👨‍🔧','👩‍🎓','👨‍🎓','👩‍🚀','👨‍🚀','👩‍🚒','👨‍🚒','👩‍✈️','👨‍✈️','👩‍🎤','👨‍🎤','👩‍🏭','👨‍🏭','👩‍🌾','👨‍🌾','🕵️‍♀️','🕵️‍♂️','👷‍♀️','👷‍♂️','💂‍♀️','💂‍♂️','🤴','👸','🦸‍♀️','🦸‍♂️','🦹‍♀️','🦹‍♂️','🧙‍♀️','🧙‍♂️','🧝‍♀️','🧝‍♂️','🧚‍♀️','🧚‍♂️','🧛‍♀️','🧛‍♂️','🧜‍♀️','🧜‍♂️','👼','👶','👧','🧒','👦','👩','🧑','👨','👩‍🦰','👨‍🦰','👱‍♀️','👱‍♂️','👩‍🦳','👨‍🦳','👩‍🦲','👨‍🦲','🧔','👴','👵','🧓','🤖','👻','👽','🎅','🤶','😊','🤓'];
         // Employee chat reuses main session mechanism — isolation via session_id
 
         const pinnedTasks = computed(() => {
@@ -392,9 +392,6 @@ const app = createApp({
         function handleBackgroundWsMessage(sid, data) {
             if (!data || !data.type) return;
             if (data.type === 'done' || data.type === 'error' || data.type === 'session.updated') {
-                // Invalidate cached messages so next switchSession reloads
-                // fresh history from server (which includes the agent reply
-                // that just completed in the background).
                 delete sessionMessagesCache[sid];
                 loadSessions();
                 if (data.type === 'session.updated' && activeWsSession !== sid) {
@@ -924,6 +921,9 @@ const app = createApp({
                 if (data.ok) {
                     showEditEmployeeDialog.value = false;
                     editingEmployee.value = data.employee || {};
+                    if (currentEmployee.value && currentEmployee.value.id === empId) {
+                        currentEmployee.value = data.employee || currentEmployee.value;
+                    }
                     await loadEmployees();
                 } else {
                     alert('保存失败：' + (data.error || '未知错误'));

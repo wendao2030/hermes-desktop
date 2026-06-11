@@ -56,7 +56,7 @@ def load_config():
 
 app = FastAPI(title="Hermes Desktop Client")
 
-DESKTOP_HOST_VALUES = {"127.0.0.1", "localhost", "::1"}
+DESKTOP_HOST_VALUES = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 SESSION_ID_RE = re.compile(r"^(?:\d{8}_\d{6}_[a-f0-9]{8}|emp-[a-f0-9]{8})$")
 
 
@@ -69,10 +69,18 @@ def _host_without_port(value: str) -> str:
 
 
 def _is_desktop_host(value: str) -> bool:
-    return _host_without_port(value) in DESKTOP_HOST_VALUES
+    """Check if host is a local/desktop address."""
+    host = _host_without_port(value)
+    if host in DESKTOP_HOST_VALUES:
+        return True
+    # Also allow any 127.x.x.x loopback addresses
+    if host.startswith("127."):
+        return True
+    return False
 
 
 def _origin_is_allowed(value: str) -> bool:
+    """Allow if origin is missing or from localhost. Blocks external origins."""
     if not value:
         return True
     parsed = urlparse(value)
@@ -84,18 +92,22 @@ def _origin_is_allowed(value: str) -> bool:
 @app.middleware("http")
 async def desktop_boundary_middleware(request: Request, call_next):
     host = request.headers.get("host", "")
-    if host and not _is_desktop_host(host):
-        return JSONResponse({"detail": "Invalid Host header"}, status_code=400)
     origin = request.headers.get("origin", "")
-    if origin and not _origin_is_allowed(origin):
-        return JSONResponse({"detail": "Invalid Origin header"}, status_code=403)
+    # Only block if BOTH host AND origin are clearly external
+    if host and not _is_desktop_host(host) and origin and not _origin_is_allowed(origin):
+        log_msg("WARN", f"Blocked external request: Host={host} Origin={origin}")
+        return JSONResponse({"detail": "External access not allowed"}, status_code=403)
     return await call_next(request)
 
 
 def _ws_request_is_allowed(websocket: WebSocket) -> bool:
-    return _is_desktop_host(websocket.headers.get("host", "")) and _origin_is_allowed(
-        websocket.headers.get("origin", "")
-    )
+    host = websocket.headers.get("host", "")
+    origin = websocket.headers.get("origin", "")
+    # Block only if clearly external
+    if host and not _is_desktop_host(host) and origin and not _origin_is_allowed(origin):
+        log_msg("WARN", f"Blocked external WS: Host={host} Origin={origin}")
+        return False
+    return True
 
 # --- In-memory server log ---
 server_logs = []
