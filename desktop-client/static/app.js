@@ -59,6 +59,8 @@ const app = createApp({
         const messages = ref([]);
         const inputText = ref('');
         const isThinking = ref(false);
+        const isLoadingSession = ref(false);
+        const isStoppingResponse = ref(false);
         const wsStatus = ref('未连接');
         const wsError = ref(false);
         const config = ref({ model: 'loading...', provider: '', base_url: '', max_turns: 90 });
@@ -210,6 +212,7 @@ const app = createApp({
         let activeWsSession = '';
         let streamRenderTimer = null;
         let scrollTimer = null;
+        const DISPLAY_HISTORY_LIMIT = 80;
 
         function renderStreamingNow() {
             if (streamRenderTimer) {
@@ -236,6 +239,10 @@ const app = createApp({
             streamingHtml.value = '';
         }
 
+        function renderUserContent(content) {
+            return escapeHtml(String(content || '')).replace(/\r?\n/g, '<br>');
+        }
+
         const displayedMessages = computed(() => {
             // Hide tool messages from main chat flow (they're technical details)
             // Show user, agent/assistant, system messages only
@@ -246,7 +253,8 @@ const app = createApp({
                     m.role === 'user' || m.role === 'agent' ||
                     m.role === 'assistant' || m.role === 'agent-streaming' ||
                     m.role === 'system'
-                );
+                )
+                .filter(m => !isInternalDisplayMessage(m));
             if (streamingText.value && isThinking.value) {
                 msgs.push({
                     role: 'agent-streaming',
@@ -256,6 +264,15 @@ const app = createApp({
             }
             return msgs;
         });
+
+        function isInternalDisplayMessage(msg) {
+            const text = String(msg && (msg.content || msg.html || '') || '').trim().toUpperCase();
+            if (!text) return false;
+            if (text.includes('CONTEXT COMPACTION') && text.includes('REFERENCE ONLY')) return true;
+            if (text.startsWith('[CONTEXT COMPACTION')) return true;
+            if (msg.role === 'system' && (text.includes('REFERENCE ONLY') || text.includes('COMPACTED'))) return true;
+            return false;
+        }
 
         const lastDisplayedAgentIdx = computed(() => {
             for (let i = displayedMessages.value.length - 1; i >= 0; i--) {
@@ -278,6 +295,25 @@ const app = createApp({
             return d.toLocaleDateString('zh-CN');
         }
 
+        function pad2(n) {
+            return String(n).padStart(2, '0');
+        }
+
+        function formatMessageTime(value) {
+            if (!value) return '';
+            const d = typeof value === 'number' ? new Date(value * 1000) : new Date(value);
+            if (Number.isNaN(d.getTime())) return '';
+            return [
+                d.getFullYear(),
+                pad2(d.getMonth() + 1),
+                pad2(d.getDate())
+            ].join('-') + ' ' + [
+                pad2(d.getHours()),
+                pad2(d.getMinutes()),
+                pad2(d.getSeconds())
+            ].join(':');
+        }
+
         function scrollToBottom() {
             if (scrollTimer) return;
             scrollTimer = setTimeout(function() {
@@ -289,17 +325,31 @@ const app = createApp({
             }, 50);
         }
 
-        function addMessage(role, content) {
+        function addMessage(role, content, timestamp) {
+            const ts = timestamp || (Date.now() / 1000);
             if (role === 'system' || role === 'tool') {
-                messages.value.push({ role, content: escapeHtml(content) });
+                messages.value.push({ role, content: escapeHtml(content), timestamp: ts });
+            } else if (role === 'user') {
+                messages.value.push({ role, content, html: renderUserContent(content), timestamp: ts });
             } else {
-                messages.value.push({ role, content, html: renderMarkdown(content) });
+                messages.value.push({ role, content, html: renderMarkdown(content), timestamp: ts });
             }
             // Keep cache in sync
             if (currentSessionId.value) {
                 sessionMessagesCache[currentSessionId.value] = [...messages.value];
             }
             scrollToBottom();
+        }
+
+        function logClientEvent(event, detail) {
+            try {
+                fetch('/api/client-log', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ event, detail, session_id: currentSessionId.value || '' }),
+                    keepalive: true
+                }).catch(() => {});
+            } catch (e) {}
         }
 
         function connectWebSocket(sid) {
@@ -352,7 +402,14 @@ const app = createApp({
                     }
                 };
 
-                sock.onclose = () => {
+                sock.onclose = (event) => {
+                    logClientEvent('ws.close', {
+                        sid,
+                        code: event.code,
+                        reason: event.reason || '',
+                        wasClean: event.wasClean,
+                        active: activeWsSession === sid
+                    });
                     if (wsBySession[sid] === sock) delete wsBySession[sid];
                     if (activeWsSession !== sid) return;
                     wsStatus.value = '已断开';
@@ -362,6 +419,7 @@ const app = createApp({
                 };
 
                 sock.onerror = () => {
+                    logClientEvent('ws.error', { sid, active: activeWsSession === sid });
                     if (activeWsSession !== sid) return;
                     wsError.value = true;
                     wsStatus.value = '连接错误';
@@ -372,6 +430,24 @@ const app = createApp({
                 wsReconnectTimer = setTimeout(() => connectWebSocket(sid), 3000);
                 return;
             }
+        }
+
+        function waitForWebSocketReady(timeoutMs) {
+            return new Promise((resolve) => {
+                const deadline = Date.now() + (timeoutMs || 5000);
+                const check = () => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        resolve(true);
+                        return;
+                    }
+                    if (Date.now() >= deadline) {
+                        resolve(false);
+                        return;
+                    }
+                    setTimeout(check, 100);
+                };
+                check();
+            });
         }
 
         function closeSessionSocket(sid) {
@@ -485,6 +561,12 @@ const app = createApp({
                     break;
 
                 case 'done': {
+                    if (!isThinking.value && isStoppingResponse.value) {
+                        clearStreamingState();
+                        isStoppingResponse.value = false;
+                        loadSessions();
+                        break;
+                    }
                     // Flush any remaining buffered think filter text
                     _resetThinkFilter();
 
@@ -516,6 +598,7 @@ const app = createApp({
                     nextTick(function() {
                         clearStreamingState();
                         isThinking.value = false;
+                        isStoppingResponse.value = false;
                         scrollToBottom();
                     });
 
@@ -534,19 +617,23 @@ const app = createApp({
                     addMessage('system', '[ERROR] ' + data.text);
                     nextTick(function() {
                         isThinking.value = false;
+                        isStoppingResponse.value = false;
                         clearStreamingState();
                     });
                     break;
 
                 case 'info':
-                    if (data.text && data.text !== 'pong') {
+                    if (data.text && data.text !== 'pong' && data.text !== 'Interrupted') {
                         addMessage('system', '[INFO] ' + data.text);
+                    }
+                    if (data.text === 'Interrupted') {
+                        isStoppingResponse.value = false;
                     }
                     break;
             }
         }
 
-        function sendMessage() {
+        async function sendMessage() {
             const text = inputText.value.trim();
             if (!text || isThinking.value) return;
 
@@ -556,8 +643,19 @@ const app = createApp({
             }
 
             if (!ws || ws.readyState !== WebSocket.OPEN) {
-                addMessage('system', '[ERROR] 未连接到服务器');
-                return;
+                wsStatus.value = '正在重连...';
+                wsError.value = true;
+                if (currentSessionId.value) {
+                    connectWebSocket(currentSessionId.value);
+                    const ready = await waitForWebSocketReady(5000);
+                    if (!ready) {
+                        addMessage('system', '[ERROR] 未连接到服务器，请稍等几秒后重试');
+                        return;
+                    }
+                } else {
+                    addMessage('system', '[ERROR] 未连接到服务器');
+                    return;
+                }
             }
 
             // Reset think filter for new turn
@@ -574,6 +672,7 @@ const app = createApp({
             }
 
             isThinking.value = true;
+            isStoppingResponse.value = false;
             clearStreamingState();
             ws.send(JSON.stringify({ message: msgText }));
             inputText.value = '';
@@ -583,11 +682,21 @@ const app = createApp({
 
         async function stopCurrentResponse() {
             if (!currentSessionId.value || !isThinking.value) return;
+            const partialText = streamingText.value.trim();
             try {
                 await fetch('/api/session/' + currentSessionId.value + '/interrupt', { method: 'POST' });
+                if (partialText) {
+                    renderStreamingNow();
+                    addMessage('agent', partialText);
+                }
+                clearStreamingState();
+                isThinking.value = false;
+                isStoppingResponse.value = true;
+                scrollToBottom();
                 wsStatus.value = '正在停止...';
             } catch (e) {
                 console.error('Stop error:', e);
+                isStoppingResponse.value = false;
                 addMessage('system', '[ERROR] 停止失败');
             }
         }
@@ -1794,6 +1903,8 @@ const app = createApp({
                 await newSession();
             } else if (currentSessionId.value !== mainSessionId.value) {
                 switchSession(mainSessionId.value);
+            } else {
+                await refreshSessionRunningState(mainSessionId.value);
             }
         }
 
@@ -1809,9 +1920,15 @@ const app = createApp({
             currentSessionId.value = sid;
             clearStreamingState();
             isThinking.value = false;
-            await loadSessionHistory(sid);
+            isStoppingResponse.value = false;
+            const hadCache = showSessionFromCache(sid);
             connectWebSocket(sid);
-            await refreshSessionRunningState(sid);
+            Promise.allSettled([
+                refreshSessionRunningState(sid),
+                loadSessionHistory(sid, !hadCache)
+            ]).catch((e) => {
+                console.warn('Switch session load failed:', e);
+            });
 
             const s = sessions.value.find(item => item.session_id === sid);
             currentTitle.value = s ? (s.title || '新对话') : '新对话';
@@ -1822,8 +1939,15 @@ const app = createApp({
                 const resp = await fetch('/api/session/' + encodeURIComponent(sid) + '/status');
                 const data = await resp.json();
                 if (data.ok && sid === currentSessionId.value) {
+                    const wasThinking = isThinking.value || !!streamingText.value;
                     isThinking.value = !!data.running;
-                    if (!data.running) clearStreamingState();
+                    if (!data.running) {
+                        clearStreamingState();
+                        if (wasThinking) {
+                            delete sessionMessagesCache[sid];
+                            await loadSessionHistory(sid, true);
+                        }
+                    }
                 }
             } catch (e) {
                 console.warn('Session status failed:', e);
@@ -1841,28 +1965,55 @@ const app = createApp({
             }
         }
 
-        async function loadSessionHistory(sid) {
-            // Check cache first
+        function showSessionFromCache(sid) {
             if (sessionMessagesCache[sid]) {
                 messages.value = [...sessionMessagesCache[sid]];
+                isLoadingSession.value = false;
                 scrollToBottom();
+                return true;
+            } else {
+                messages.value = [];
+                isLoadingSession.value = true;
+                scrollToBottom();
+                return false;
+            }
+        }
+
+        async function loadSessionHistory(sid, force) {
+            // Check cache first
+            if (!force && sessionMessagesCache[sid]) {
+                if (sid === currentSessionId.value) {
+                    messages.value = [...sessionMessagesCache[sid]];
+                    isLoadingSession.value = false;
+                    scrollToBottom();
+                }
                 return;
             }
+            if (sid === currentSessionId.value && !sessionMessagesCache[sid]) {
+                isLoadingSession.value = true;
+            }
             try {
-                const resp = await fetch('/api/session/' + sid + '/history');
+                const resp = await fetch('/api/session/' + sid + '/history?limit=' + DISPLAY_HISTORY_LIMIT);
                 if (!resp.ok) throw new Error('Not found');
                 const data = await resp.json();
-                messages.value = (data.history || []).map((m) => {
+                const loadedMessages = (data.history || []).map((m) => {
                     const role = m.role === 'assistant' ? 'agent' : m.role;
                     const content = m.content || '';
                     return {
                         ...m,
                         role,
-                        html: role === 'agent' ? renderMarkdown(content) : escapeHtml(content),
+                        timestamp: m.timestamp,
+                        html: role === 'agent' ? renderMarkdown(content) : (role === 'user' ? renderUserContent(content) : escapeHtml(content)),
                     };
                 });
-                // Cache the loaded messages
-                sessionMessagesCache[sid] = [...messages.value];
+                const cached = sessionMessagesCache[sid] || [];
+                const finalMessages = cached.length > loadedMessages.length ? cached : loadedMessages;
+                sessionMessagesCache[sid] = [...finalMessages];
+
+                if (sid !== currentSessionId.value) return;
+
+                messages.value = [...finalMessages];
+                isLoadingSession.value = false;
 
                 // Restore previous scroll position for this session, or scroll to bottom on first load.
                 // The chatArea element is inside v-if="activeView === 'chat'", so we need to
@@ -1885,8 +2036,11 @@ const app = createApp({
                     setTimeout(tryScroll, 150);
                 });
             } catch (e) {
-                messages.value = [];
-                sessionMessagesCache[sid] = [];
+                if (!sessionMessagesCache[sid]) sessionMessagesCache[sid] = [];
+                if (sid === currentSessionId.value) {
+                    messages.value = [...sessionMessagesCache[sid]];
+                    isLoadingSession.value = false;
+                }
             }
         }
 
@@ -2039,6 +2193,8 @@ const app = createApp({
             displayedMessages,
             inputText,
             isThinking,
+            isLoadingSession,
+            isStoppingResponse,
             wsStatus,
             wsError,
             config,
@@ -2108,6 +2264,7 @@ const app = createApp({
             logBody,
             renderMarkdown,
             formatDate,
+            formatMessageTime,
             sendMessage,
             stopCurrentResponse,
             handleKeydown,

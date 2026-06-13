@@ -33,6 +33,57 @@ Hermes Agent's desktop automation capabilities vary significantly by platform. U
 - **Requirements**: macOS with Accessibility permissions granted
 
 ### Windows
+
+**⚠️ CRITICAL: cua-driver 0.4.0 Windows Compatibility Bug (June 11, 2026)**
+
+A serious defect has been discovered in cua-driver 0.4.0 on Windows 10:
+
+| Function Category | Status | Notes |
+|-------------------|--------|-------|
+| **Basic queries** | ✅ Working | `get_screen_size`, `list-tools`, `get_cursor_position` |
+| **Interaction** | ❌ TIMEOUT | `hotkey`, `click`, `double_click`, `press_key`, `type_text` |
+| **Window enumeration** | ❌ TIMEOUT | `list_windows`, `get_accessibility_tree`, `get_window_state` |
+| **Hermes capture** | ❌ FAILS | `computer_use(action='capture')` returns empty error |
+
+**Symptoms**: Interaction commands hang for 180 seconds then timeout, even though `cua-driver --version` and `get_screen_size` work correctly. Killing and restarting cua-driver does NOT fix the issue.
+
+**✅ VERIFIED WORKAROUND: Pure Python Scripts Calling Windows API Directly**
+
+Completely bypass cua-driver interaction functions. Use Python `ctypes` to call `user32.dll` directly:
+
+```python
+import ctypes
+import time
+
+user32 = ctypes.windll.user32
+
+# Send Ctrl+Alt+W
+VK_CONTROL = 0x11
+VK_MENU = 0x12
+VK_W = 0x57
+
+user32.keybd_event(VK_CONTROL, 0, 0, 0)
+user32.keybd_event(VK_MENU, 0, 0, 0)
+user32.keybd_event(VK_W, 0, 0, 0)
+time.sleep(0.05)
+user32.keybd_event(VK_W, 0, 2, 0)
+user32.keybd_event(VK_MENU, 0, 2, 0)
+user32.keybd_event(VK_CONTROL, 0, 2, 0)
+```
+
+**Available Scripts** (all verified working):
+- `scripts/send_hotkey.py` - Activate WeChat via Ctrl+Alt+W
+- `scripts/send_ctrl_f.py` - Activate search via Ctrl+F
+- `scripts/send_enter.py` - Send Enter key
+- `scripts/type_search_text.py` - Clipboard paste for search terms
+- `scripts/paste_test_message.py` - Clipboard paste for messages
+
+**Impact on Visual Enhancement**: When model supports vision but cua-driver `capture` is broken, skip visual verification and rely on Python scripts + user confirmation.
+
+**See Also**: `references/cua-driver-0.4.0-windows-bug-2026-06-11.md` in wechat-messaging skill for full debugging details.
+
+---
+
 - **✅ Full support** via `computer_use` toolset with code modifications (verified May 31, 2026)
 - **Backend**: `cua-driver` (Rust implementation, cross-platform) version 0.4.0
 - **Current state**: Fully functional after removing macOS platform restrictions
@@ -137,13 +188,23 @@ class ComputerUseBackend(ABC):
 3. Extract and add to PATH or place in `~/.local/bin/`
 4. Verify with `cua-driver --version`
 
-### Issue: Want Windows desktop automation
-**Current status**: Supported with modifications
-**Required steps**:
-1. Modify Hermes code to remove macOS platform checks
-2. Install cua-driver Rust binary for Windows
-3. Restart Hermes session
-**Immediate alternatives**: Use `terminal` toolset to run external automation scripts
+### Issue: cua-driver hotkey sending to wrong process on Windows
+**Symptoms**: Hotkeys like `Ctrl+Alt+W` return success but don't activate target application
+**Evidence**: 
+```json
+{"ok": true, "action": "hotkey", "message": "✅ Pressed ctrl+option+w on pid 8788 via PostMessage (Win32 target)."}
+// Actual: sent to explorer.exe instead of target app
+```
+**Root cause**: cua-driver sends global hotkeys to wrong window handle via PostMessage API
+**Solutions**:
+1. **Python script workaround**: Create scripts using Windows SendInput API directly
+2. **Alternative activation methods**: Start menu, taskbar, or command line
+3. **User manual verification**: Must obtain user visual confirmation after hotkey attempts
+**Scripts created**:
+- `send_hotkey.py` - Ctrl+Alt+W for WeChat activation
+- `send_ctrl_f.py` - Ctrl+F for search activation  
+- `send_enter.py` - Enter key for selection/sending
+**Location**: `C:\Users\dtyao\AppData\Local\hermes\scripts\`
 
 ## Current Implementation Status
 
@@ -476,6 +537,7 @@ cua-driver list_windows | grep -i notepad
   - `mouse`: https://github.com/boppreh/mouse
 
 **Additional Reference Files**
+- `references/windows-cua-driver-hotkey-bug-2026-06-11.md` - **关键发现**：cua-driver在Windows上快捷键发送缺陷详细分析，包含问题现象、根本原因和Python脚本解决方案
 - `references/desktop-automation-discipline-2026-06-10.md` - **重要更新**：基于2026年6月10日对话的技能使用纪律、沟通风格要求和技术理解深度分析
 - `references/qq-installation-windows.md` - Complete QQ installation guide
 - `references/windows-qq-control-implementation.md` - Working automation examples
@@ -826,6 +888,67 @@ for elem in result['elements']:
         break
 ```
 
+### 微信启动方式差异（重要用户指导）
+
+**用户明确指导**：\"调用快捷键 ctrl + alt + w就可以打开微信，你不要打开桌面的微信图标，那个要登陆的，我都登陆过了\"
+
+**关键发现**：微信有两种不同的启动/激活方式：
+
+#### 1. 桌面图标启动（不推荐）
+- **行为**：打开新的微信登录界面
+- **问题**：需要重新登录，无法访问已登录的会话
+- **用户反馈**：\"那个要登陆的，我都登陆过了\"
+- **避免使用**：不要点击桌面或任务栏的微信图标
+
+#### 2. 快捷键激活（推荐）
+- **快捷键**：`Ctrl+Alt+W`
+- **行为**：激活已登录的微信窗口
+- **优点**：保持当前登录状态，直接进入主界面
+- **用户确认**：用户明确表示此快捷键有效
+- **实现方式**：使用Python脚本绕过cua-driver缺陷
+
+#### 3. 技术实现差异
+```python
+# ❌ 错误方式：点击桌面图标（会打开新登录界面）
+computer_use(action='click', element=5)  # 任务栏微信图标
+
+# ✅ 正确方式：使用快捷键激活已登录窗口
+# 由于cua-driver在Windows上快捷键发送缺陷，必须使用Python脚本
+subprocess.run(['python', 'send_hotkey.py'])  # 发送Ctrl+Alt+W
+```
+
+#### 4. 用户期望明确
+1. **保持登录状态**：用户已登录，不希望重新登录
+2. **快捷键优先**：使用`Ctrl+Alt+W`而不是点击图标
+3. **立即激活**：快速切换到已打开的微信窗口
+4. **避免登录流程**：跳过登录界面，直接进入主界面
+
+#### 5. 对自动化流程的影响
+**正确流程**：
+```python
+# 1. 使用Python脚本发送Ctrl+Alt+W
+subprocess.run(['python', 'send_hotkey.py'])
+time.sleep(2)  # 等待窗口激活
+
+# 2. 发送Ctrl+F搜索
+subprocess.run(['python', 'send_ctrl_f.py'])
+time.sleep(2)  # 等待搜索框出现
+
+# 3. 输入搜索词
+computer_use(action='type', text='联系人姓名')
+time.sleep(3)  # 等待搜索结果
+
+# 4. 选择结果
+subprocess.run(['python', 'send_enter.py'])
+time.sleep(2)  # 等待进入聊天界面
+```
+
+**关键教训**：
+- 尊重应用程序的现有状态（已登录 vs 未登录）
+- 使用用户确认有效的方法（`Ctrl+Alt+W`）
+- 避免破坏用户工作流程（重新登录）
+- 理解不同启动方式的行为差异
+
 ### 8. 用户验证期望的演变
 **用户技术理解能力的体现**：
 1. **理解cua-driver工作原理**：能识别操作中的逻辑矛盾
@@ -1028,19 +1151,95 @@ print("Please verify the search box was clicked and is ready for input.")
 - Include fallback strategies for text-only analysis
 - Document model compatibility requirements
 - Provide user guidance for verification steps
-```bash
-# Find QQ window
-cua-driver list_windows | grep -i "qq\\|腾讯"
+## Critical Discovery: cua-driver `type` Function Defect on Windows (June 11, 2026)
 
-# Get window state (PID 5160, window_id 264124 in test)
-cua-driver call get_window_state '{"pid": 5160, "window_id": 264124, "capture_mode": "som"}'
+**Problem Description**: The `type` function in cua-driver on Windows 10 may return success (`ok: true`) but fail to actually input text into target applications, particularly with Chinese text input.
 
-# Type message
-cua-driver call type_text '{"pid": 5160, "text": "自动发送的消息"}'
+**Evidence from WeChat Automation**:
+```json
+// Tool returns success but text not actually entered
+{"ok": true, "action": "type_text", "message": "✅ Typed 6 char(s) on pid 8788 via PostMessage (30ms delay)."}
 
-# Send message (Enter key)
-cua-driver call press_key '{"pid": 5160, "key": "Enter"}'
+// User repeatedly corrects:
+// "搜索后，你还是没有输入 AI 数字人"
+// "这一次，你打开了微信，执行了搜索，但还是没有输入 AI 数字人 去找人"
 ```
+
+**Root Cause Analysis**:
+1. **Process targeting error**: cua-driver may send text to wrong process/window
+2. **Focus loss**: After `Ctrl+F` activates search, focus may not transfer to search box
+3. **Windows API limitation**: `PostMessage` method may be unreliable for certain applications
+4. **Chinese text encoding**: Chinese characters may require special handling
+
+**Impact on Desktop Automation**:
+- **WeChat**: Text input frequently fails despite success status
+- **QQ**: Text input works more reliably (demonstrated May 31, 2026)
+- **Cross-application inconsistency**: Same cua-driver version behaves differently across apps
+
+**Workaround Solution: Clipboard Paste Method**
+Completely bypass cua-driver's `type` function using Python script + clipboard:
+
+**Implementation**:
+```python
+import pyperclip
+import ctypes
+import time
+
+def type_with_clipboard(text):
+    """Use clipboard paste for reliable text input"""
+    # 1. Copy text to system clipboard
+    pyperclip.copy(text)
+    
+    # 2. Send Ctrl+V to paste
+    # Windows API implementation...
+    
+    return True
+```
+
+**Script Location**: `C:\Users\dtyao\AppData\Local\hermes\scripts\type_search_text.py`
+
+**Success Verification (June 11, 2026)**:
+Using clipboard paste method successfully completed full WeChat automation:
+1. ✅ Activate WeChat window (Python script)
+2. ✅ Send Ctrl+F search (Python script)  
+3. ✅ Input "AI 数字人" (clipboard paste)
+4. ✅ Select first search result (Python script)
+5. ✅ Input and send test message (clipboard paste)
+
+**Key Advantages**:
+1. **Reliability**: Bypasses cua-driver's `type` defect
+2. **Consistency**: All operations use same technology stack
+3. **Verifiability**: Script output provides clear status
+4. **Maintainability**: Centralized Python script management
+
+**Recommended Python Script Priority**:
+Based on cua-driver's multiple defects on Windows, all critical operations should use Python scripts:
+
+| Operation | Problem | Python Script Solution |
+|-----------|---------|------------------------|
+| `Ctrl+Alt+W` activation | Sent to wrong process | `send_hotkey.py` |
+| `Ctrl+F` search | May fail | `send_ctrl_f.py` |
+| Text input | Returns success but fails | `type_search_text.py` (clipboard) |
+| `Enter` selection/send | May fail | `send_enter.py` |
+
+**Script Location**: `C:\Users\dtyao\AppData\Local\hermes\scripts\`
+
+**Verification Command**:
+```bash
+cd /c/Users/dtyao/AppData/Local/hermes/scripts && python type_search_text.py
+# Expected output: ✅ 文本已复制到剪贴板: AI 数字人
+```
+
+**Updated Best Practices for Windows Desktop Automation**:
+1. **Python scripts for all critical operations**: Hotkeys, text input, enter key
+2. **Clipboard paste for text input**: More reliable than cua-driver `type`
+3. **Script output verification**: Check for success messages in script output
+4. **User manual verification**: Still required for final confirmation
+
+**Reference Scripts Created**:
+- `scripts/type_search_text.py` - Clipboard paste input
+- `scripts/wechat_search_input.py` - Complete search input workflow
+- `scripts/send_test_message.py` - Test message sending
 
 ### 2. Find Contacts in QQ
 ```bash

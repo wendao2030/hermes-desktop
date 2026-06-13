@@ -57,7 +57,7 @@ def load_config():
 app = FastAPI(title="Hermes Desktop Client")
 
 DESKTOP_HOST_VALUES = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
-SESSION_ID_RE = re.compile(r"^(?:\d{8}_\d{6}_[a-f0-9]{8}|emp-[a-f0-9]{8})$")
+SESSION_ID_RE = re.compile(r"^(?:\d{8}_\d{6}_[a-f0-9]{6,8}|emp-[a-f0-9]{8})$")
 
 
 def _host_without_port(value: str) -> str:
@@ -112,6 +112,8 @@ def _ws_request_is_allowed(websocket: WebSocket) -> bool:
 # --- In-memory server log ---
 server_logs = []
 MAX_LOG_LINES = 500
+DISPLAY_HISTORY_LIMIT = int(os.environ.get("HERMES_DESKTOP_DISPLAY_HISTORY_LIMIT", "80"))
+AGENT_REPLAY_HISTORY_LIMIT = int(os.environ.get("HERMES_DESKTOP_AGENT_HISTORY_LIMIT", "80"))
 LOG_FILE = Path(__file__).resolve().parent / "desktop_server.log"
 
 def log_msg(level: str, msg: str):
@@ -345,6 +347,56 @@ def _merge_streamed_and_final_text(streamed_text: str, final_text: str) -> str:
         return final
     return streamed.rstrip() + "\n\n" + final.lstrip()
 
+def _finalize_agent_turn(session_id: str, session: dict, result: dict, message: str, stream_state: dict) -> str:
+    """Persist an agent result even if the desktop WebSocket disappeared."""
+    full_messages = result.get("messages", []) if isinstance(result, dict) else []
+    final_text = result.get("final_response", "") if isinstance(result, dict) else ""
+    if not final_text and full_messages:
+        last = full_messages[-1]
+        if last.get("role") == "assistant":
+            final_text = last.get("content", "")
+
+    streamed_text = "".join(stream_state.get("chunks") or [])
+    merged_text = _merge_streamed_and_final_text(streamed_text, final_text)
+    if merged_text:
+        final_text = merged_text
+
+    if full_messages:
+        if final_text:
+            for idx in range(len(full_messages) - 1, -1, -1):
+                if full_messages[idx].get("role") == "assistant":
+                    full_messages[idx] = {**full_messages[idx], "content": final_text}
+                    break
+            else:
+                full_messages.append({"role": "assistant", "content": final_text})
+        with session_lock:
+            current = sessions.get(session_id)
+            if current is session:
+                current["history"] = full_messages
+        try:
+            _replace_messages_preserving_timestamps(session_id, full_messages)
+        except Exception as e:
+            log_msg("WARN", f"[{session_id[:12]}] Persist finished turn failed: {e}")
+        try:
+            if not session_db.get_session_title(session_id):
+                title = _default_title_from_history(full_messages, message[:30])
+                if title:
+                    session_db.set_session_title(session_id, title)
+                    with session_lock:
+                        current = sessions.get(session_id)
+                        if current is session:
+                            current["title"] = title
+        except Exception:
+            pass
+
+    result["__desktop_final_text"] = final_text
+    result["__desktop_finalized"] = True
+    log_msg("INFO", f"[{session_id[:12]}] Agent response complete, {len(final_text)} chars")
+    _api_calls = result.get("api_calls", 0)
+    _msg_count = len(full_messages) if full_messages else 0
+    log_msg("INFO", f"[{session_id[:12]}] Turn stats: api_calls={_api_calls}, total_messages={_msg_count}")
+    return final_text
+
 def _employee_tasks_path(employee_id: str) -> Path:
     return _employee_dir(employee_id) / "tasks" / "index.json"
 
@@ -513,6 +565,7 @@ DESKTOP_STATE_PATH = HERMES_HOME / "desktop-client" / "state.json"
 active_connections = 0
 shutdown_timer = None
 shutdown_lock = threading.Lock()
+WS_SHUTDOWN_GRACE_SECONDS = float(os.environ.get("HERMES_WS_SHUTDOWN_GRACE", "120"))
 
 def cancel_shutdown():
     global shutdown_timer
@@ -526,16 +579,28 @@ def schedule_shutdown():
     with shutdown_lock:
         if shutdown_timer:
             return
-        shutdown_timer = threading.Timer(8.0, do_shutdown)
+        shutdown_timer = threading.Timer(WS_SHUTDOWN_GRACE_SECONDS, do_shutdown)
         shutdown_timer.daemon = True
         shutdown_timer.start()
-        log_msg("INFO", "Browser disconnected, server will exit in 8s if no reconnect...")
+        log_msg("INFO", f"Browser disconnected, server will exit in {WS_SHUTDOWN_GRACE_SECONDS:.0f}s if no reconnect...")
 
 def do_shutdown():
     global shutdown_timer
     with shutdown_lock:
         if active_connections > 0:
             shutdown_timer = None
+            return
+        with session_lock:
+            running_sessions = []
+            for sid, session in sessions.items():
+                thread = session.get("agent_thread")
+                if session.get("running") and thread and thread.is_alive():
+                    running_sessions.append(sid)
+        if running_sessions:
+            shutdown_timer = threading.Timer(30.0, do_shutdown)
+            shutdown_timer.daemon = True
+            shutdown_timer.start()
+            log_msg("INFO", f"Shutdown deferred; {len(running_sessions)} session(s) still running")
             return
         shutdown_timer = None
     log_msg("INFO", "Shutting down (no active clients)...")
@@ -659,9 +724,26 @@ def _history_for_frontend(history: list[dict]) -> list[dict]:
         content = _message_text(msg.get("content"))
         if not content and role != "assistant":
             continue
+        if _is_internal_frontend_message(role, content):
+            continue
         item = {"role": role, "content": content}
+        if msg.get("timestamp") is not None:
+            item["timestamp"] = msg.get("timestamp")
         visible.append(item)
     return visible
+
+def _is_internal_frontend_message(role: str, content: str) -> bool:
+    text = (content or "").strip()
+    if not text:
+        return False
+    upper = text[:500].upper()
+    if "CONTEXT COMPACTION" in upper and "REFERENCE ONLY" in upper:
+        return True
+    if upper.startswith("[CONTEXT COMPACTION"):
+        return True
+    if role == "system" and ("REFERENCE ONLY" in upper or "COMPACTED" in upper):
+        return True
+    return False
 
 def _load_history_from_db(session_id: str) -> list[dict]:
     try:
@@ -669,6 +751,85 @@ def _load_history_from_db(session_id: str) -> list[dict]:
     except Exception as e:
         log_msg("WARN", f"[{session_id[:12]}] Failed to load DB history: {e}")
         return []
+
+def _load_display_history_from_db(session_id: str, limit: int = DISPLAY_HISTORY_LIMIT) -> list[dict]:
+    """Load frontend history with DB timestamps without changing agent replay shape."""
+    try:
+        session_ids = [session_id]
+        lineage = getattr(session_db, "_session_lineage_root_to_tip", None)
+        if callable(lineage):
+            session_ids = lineage(session_id)
+        limit = max(1, min(int(limit or DISPLAY_HISTORY_LIMIT), 1000))
+        placeholders = ",".join("?" for _ in session_ids)
+        with session_db._lock:
+            rows = session_db._conn.execute(
+                "SELECT role, content, timestamp FROM ("
+                f"SELECT id, role, content, timestamp FROM messages WHERE session_id IN ({placeholders}) "
+                "ORDER BY id DESC LIMIT ?"
+                ") ORDER BY id",
+                tuple(session_ids) + (limit,),
+            ).fetchall()
+        decode = getattr(session_db, "_decode_content", None)
+        history = []
+        for row in rows:
+            content = row["content"]
+            if callable(decode):
+                content = decode(content)
+            history.append({
+                "role": row["role"],
+                "content": content,
+                "timestamp": row["timestamp"],
+            })
+        return history
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Failed to load display history: {e}")
+        return []
+
+def _prepare_agent_history_for_turn(history: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Return (prefix_to_preserve, recent_history_for_agent)."""
+    full = list(history or [])
+    limit = max(1, int(AGENT_REPLAY_HISTORY_LIMIT or 80))
+    if len(full) <= limit:
+        return [], full
+    start = len(full) - limit
+    # Avoid starting replay with orphaned assistant/tool records.
+    while start < len(full) and full[start].get("role") in {"assistant", "tool"}:
+        start += 1
+    if start >= len(full):
+        start = max(0, len(full) - limit)
+    return full[:start], full[start:]
+
+def _replace_messages_preserving_timestamps(session_id: str, messages: list[dict]) -> None:
+    """Replace messages while preserving timestamps for already persisted rows."""
+    old_timestamps: list[float] = []
+    try:
+        with session_db._lock:
+            rows = session_db._conn.execute(
+                "SELECT timestamp FROM messages WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+        old_timestamps = [float(row["timestamp"]) for row in rows if row["timestamp"] is not None]
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Load old timestamps failed: {e}")
+
+    session_db.replace_messages(session_id, messages)
+
+    if not old_timestamps:
+        return
+    try:
+        with session_db._lock:
+            rows = session_db._conn.execute(
+                "SELECT id FROM messages WHERE session_id = ? ORDER BY id",
+                (session_id,),
+            ).fetchall()
+            for idx, row in enumerate(rows[:len(old_timestamps)]):
+                session_db._conn.execute(
+                    "UPDATE messages SET timestamp = ? WHERE id = ?",
+                    (old_timestamps[idx], row["id"]),
+                )
+            session_db._conn.commit()
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Restore old timestamps failed: {e}")
 
 def _default_title_from_history(history: list[dict], fallback: str = "") -> str:
     for msg in history or []:
@@ -831,6 +992,8 @@ def _empty_session():
         "callbacks": {},
         "running": False,
         "agent_thread": None,
+        "interrupt_requested": False,
+        "run_id": 0,
     }
 
 def _emit_session_event(session_id: str, event: dict):
@@ -935,6 +1098,18 @@ if STATIC_DIR.exists():
 async def api_logs():
     """Return recent server logs for the frontend."""
     return {"logs": server_logs[-200:]}
+
+@app.post("/api/client-log")
+async def api_client_log(request: Request):
+    """Accept lightweight diagnostics from the desktop webview."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    event = str(payload.get("event") or "client").replace("\n", " ")[:40]
+    detail = json.dumps(payload, ensure_ascii=False, default=str)[:500]
+    log_msg("CLIENT", f"{event}: {detail}")
+    return {"ok": True}
 
 # ========== Employee API ==========
 
@@ -1532,7 +1707,7 @@ async def list_sessions():
     return result
 
 @app.get("/api/session/{session_id}/history")
-async def get_history(session_id: str):
+async def get_history(session_id: str, limit: int = DISPLAY_HISTORY_LIMIT):
     db_row = None
     try:
         db_row = session_db.get_session(session_id)
@@ -1545,19 +1720,18 @@ async def get_history(session_id: str):
     if not s and not db_row:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    history = _load_history_from_db(session_id)
-    if not history and s:
-        history = s.get("history") or []
+    display_history = _load_display_history_from_db(session_id, limit=limit)
+    if not display_history:
+        display_history = (s or {}).get("history") or []
 
     with session_lock:
         if session_id not in sessions:
             sessions[session_id] = _empty_session()
-        sessions[session_id]["history"] = history
         if db_row:
             sessions[session_id]["created_at"] = datetime.fromtimestamp(float(db_row.get("started_at") or time.time()))
-            sessions[session_id]["title"] = db_row.get("title") or _default_title_from_history(history)
+            sessions[session_id]["title"] = db_row.get("title") or _default_title_from_history(display_history)
 
-    return {"history": _history_for_frontend(history)}
+    return {"history": _history_for_frontend(display_history)}
 
 @app.get("/api/session/{session_id}/status")
 async def get_session_status(session_id: str):
@@ -1568,15 +1742,19 @@ async def get_session_status(session_id: str):
     with session_lock:
         session = sessions.get(session_id)
         thread = (session or {}).get("agent_thread")
-        running = bool((session or {}).get("running")) or bool(thread and thread.is_alive())
-    return {"ok": True, "session_id": session_id, "running": running}
+        interrupting = bool((session or {}).get("interrupt_requested"))
+        running = (bool((session or {}).get("running")) or bool(thread and thread.is_alive())) and not interrupting
+    return {"ok": True, "session_id": session_id, "running": running, "stopping": interrupting}
 
 @app.post("/api/session/{session_id}/interrupt")
 async def interrupt_session(session_id: str):
     with session_lock:
         session = sessions.get(session_id)
         agent = (session or {}).get("agent")
-        running = bool((session or {}).get("running"))
+        thread = (session or {}).get("agent_thread")
+        running = bool((session or {}).get("running")) or bool(thread and thread.is_alive())
+        if session and running:
+            session["interrupt_requested"] = True
 
     if not session or not agent:
         return {"ok": False, "status": "idle"}
@@ -2183,8 +2361,17 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     session["history"] = _load_history_from_db(session_id)
                 conversation_history = list(session.get("history") or [])
                 session["history"] = conversation_history + [{"role": "user", "content": message}]
+                session["run_id"] = int(session.get("run_id") or 0) + 1
+                session["interrupt_requested"] = False
+                run_id = session["run_id"]
+                persisted_user_history = list(session["history"])
+            try:
+                _replace_messages_preserving_timestamps(session_id, persisted_user_history)
+            except Exception as e:
+                log_msg("WARN", f"[{session_id[:12]}] Persist user message failed: {e}")
+            history_prefix, agent_history = _prepare_agent_history_for_turn(conversation_history)
             log_msg("INFO", f"[{session_id[:12]}] User: {message[:60]}")
-            log_msg("INFO", f"[{session_id[:12]}] History length: {len(conversation_history)} messages")
+            log_msg("INFO", f"[{session_id[:12]}] History length: {len(conversation_history)} messages (agent replay: {len(agent_history)})")
 
             # Auto-title on first exchange
             user_count = len([m for m in session["history"] if m.get("role") == "user"])
@@ -2203,9 +2390,44 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 try:
                     r = session["agent"].run_conversation(
                         user_message=message,
-                        conversation_history=conversation_history,
+                        conversation_history=agent_history,
                         task_id=session_id,
                     )
+                    if history_prefix and isinstance(r, dict) and isinstance(r.get("messages"), list):
+                        r = {**r, "messages": history_prefix + r["messages"]}
+                    if isinstance(r, dict) and isinstance(r.get("messages"), list):
+                        result_messages = list(r.get("messages") or [])
+                        has_current_user = any(
+                            m.get("role") == "user" and _message_text(m.get("content")).strip() == message
+                            for m in result_messages[max(0, len(conversation_history) - 2):]
+                        )
+                        if not has_current_user:
+                            if len(result_messages) < len(conversation_history):
+                                result_messages = persisted_user_history + result_messages
+                            else:
+                                insert_at = min(len(conversation_history), len(result_messages))
+                                result_messages = (
+                                    result_messages[:insert_at]
+                                    + [{"role": "user", "content": message}]
+                                    + result_messages[insert_at:]
+                                )
+                            r = {**r, "messages": result_messages}
+                    with session_lock:
+                        current = sessions.get(session_id)
+                        stale_or_cancelled = (
+                            current is not session
+                            or int(current.get("run_id") or 0) != run_id
+                            or bool(current.get("interrupt_requested"))
+                        )
+                    if stale_or_cancelled:
+                        if isinstance(r, dict):
+                            r["interrupted"] = True
+                        result_holder["result"] = r
+                        return
+                    try:
+                        _finalize_agent_turn(session_id, session, r, message, stream_state)
+                    except Exception as finalize_error:
+                        log_msg("WARN", f"[{session_id[:12]}] Finalize finished turn failed: {finalize_error}")
                     result_holder["result"] = r
                 except Exception as e:
                     tb = traceback.format_exc()
@@ -2225,6 +2447,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                         if current is session:
                             current["running"] = False
                             current["agent_thread"] = None
+                            current["interrupt_requested"] = False
                     main_loop.call_soon_threadsafe(msg_queue.put_nowait, None)
 
             agent_thread = threading.Thread(target=run_agent, daemon=True)
@@ -2248,29 +2471,33 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 if not agent_thread.is_alive():
                     session["running"] = False
                     session["agent_thread"] = None
+                    session["interrupt_requested"] = False
 
             # Process result
             if "result" in result_holder:
                 result = result_holder["result"]
                 full_messages = result.get("messages", [])
-                if full_messages:
+                interrupted_unfinalized = bool(result.get("interrupted")) and not result.get("__desktop_finalized")
+                if full_messages and not result.get("__desktop_finalized") and not interrupted_unfinalized:
                     with session_lock:
                         session["history"] = full_messages
 
-                final_text = result.get("final_response", "")
-                log_msg("INFO", f"[{session_id[:12]}] Agent response complete, {len(final_text)} chars")
-                _api_calls = result.get("api_calls", 0)
-                _msg_count = len(full_messages) if full_messages else 0
-                log_msg("INFO", f"[{session_id[:12]}] Turn stats: api_calls={_api_calls}, total_messages={_msg_count}")
+                final_text = result.get("__desktop_final_text", result.get("final_response", ""))
+                if not result.get("__desktop_finalized"):
+                    log_msg("INFO", f"[{session_id[:12]}] Agent response complete, {len(final_text)} chars")
+                    _api_calls = result.get("api_calls", 0)
+                    _msg_count = len(full_messages) if full_messages else 0
+                    log_msg("INFO", f"[{session_id[:12]}] Turn stats: api_calls={_api_calls}, total_messages={_msg_count}")
                 if not final_text and full_messages:
                     last = full_messages[-1]
                     if last.get("role") == "assistant":
                         final_text = last.get("content", "")
                 if result.get("interrupted"):
                     await safe_send({"type": "info", "text": "Interrupted"})
-                streamed_text = "".join(stream_state.get("chunks") or [])
-                merged_text = _merge_streamed_and_final_text(streamed_text, final_text)
-                if merged_text:
+                if interrupted_unfinalized:
+                    final_text = ""
+                merged_text = final_text if result.get("__desktop_finalized") else _merge_streamed_and_final_text("".join(stream_state.get("chunks") or []), final_text)
+                if merged_text and not result.get("__desktop_finalized") and not interrupted_unfinalized:
                     final_text = merged_text
                     if full_messages:
                         for idx in range(len(full_messages) - 1, -1, -1):
@@ -2282,7 +2509,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                         with session_lock:
                             session["history"] = full_messages
                         try:
-                            session_db.replace_messages(session_id, full_messages)
+                            _replace_messages_preserving_timestamps(session_id, full_messages)
                         except Exception as e:
                             log_msg("WARN", f"[{session_id[:12]}] Replace merged history failed: {e}")
 
@@ -2318,8 +2545,8 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             except Exception:
                 pass
 
-    except WebSocketDisconnect:
-        pass  # Client disconnected
+    except WebSocketDisconnect as e:
+        log_msg("INFO", f"WebSocket disconnect for {session_id[:12]} code={getattr(e, 'code', None)}")
     except Exception as e:
         try:
             await websocket.send_json({"type": "error", "text": f"Server error: {e}"})
@@ -2335,6 +2562,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 if not thread or not thread.is_alive():
                     session["running"] = False
                     session["agent_thread"] = None
+                    session["interrupt_requested"] = False
         active_connections = max(0, active_connections - 1)
         log_msg("INFO", f"Client disconnected (active: {active_connections})")
         if active_connections == 0:
