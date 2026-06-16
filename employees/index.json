@@ -87,13 +87,13 @@
         "title": "请准备这次工作",
         "workflow_id": "wf-default",
         "workflow_name": "日常工作",
-        "status": "running",
+        "status": "completed",
         "session_id": "20260607_125547_b8d36e72",
         "created_at": "2026-06-09T14:37:40.574695",
-        "updated_at": "2026-06-09T14:38:37.692892",
+        "updated_at": "2026-06-13T23:23:47.422892",
         "plan_confirmed_at": "2026-06-09T14:38:37.692892",
-        "completed_at": "",
-        "result_summary": "",
+        "completed_at": "2026-06-13T23:23:47.422233",
+        "result_summary": "晚上好呀 🌙✨ 不过有个小小的提醒哦：我是 Hermes Agent（Hermes助手），不是小美 小美是你的员工，我是你的AI助手😊 今晚有什么我可以帮你的吗？比如： - 🎨 继续设计或生成图片 - 📚 批改学生作业 - 💬 发送微信/Q...",
         "user_confirm_note": ""
       }
     },

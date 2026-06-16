@@ -22,8 +22,36 @@ from typing import Any, Optional
 # --- Path setup: import AIAgent from hermes-agent ---
 HERMES_HOME = Path(__file__).resolve().parent.parent
 HERMES_AGENT = HERMES_HOME / "hermes-agent"
+HERMES_VENV_SITE = HERMES_HOME / "venv" / "Lib" / "site-packages"
 os.environ["HERMES_HOME"] = str(HERMES_HOME)
+if HERMES_VENV_SITE.exists():
+    sys.path.insert(0, str(HERMES_VENV_SITE))
 sys.path.insert(0, str(HERMES_AGENT))
+
+def _prepend_process_path(*paths: Path) -> None:
+    existing = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    normalized = {os.path.normcase(os.path.abspath(p)) for p in existing}
+    additions: list[str] = []
+    for path in paths:
+        try:
+            if not path.exists():
+                continue
+            value = str(path)
+            key = os.path.normcase(os.path.abspath(value))
+            if key not in normalized:
+                additions.append(value)
+                normalized.add(key)
+        except Exception:
+            continue
+    if additions:
+        os.environ["PATH"] = os.pathsep.join(additions + existing)
+
+_prepend_process_path(
+    HERMES_HOME / "tools" / "bin",
+    HERMES_HOME / "venv" / "Scripts",
+    HERMES_AGENT / "venv" / "Scripts",
+    Path.home() / ".local" / "bin",
+)
 
 try:
     import hermes_bootstrap  # noqa: F401
@@ -58,6 +86,31 @@ app = FastAPI(title="Hermes Desktop Client")
 
 DESKTOP_HOST_VALUES = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 SESSION_ID_RE = re.compile(r"^(?:\d{8}_\d{6}_[a-f0-9]{6,8}|emp-[a-f0-9]{8})$")
+bubble_notify_callback = None
+bubble_pending_lock = threading.Lock()
+bubble_pending_target = {"session_id": "", "employee_id": ""}
+
+
+def _set_bubble_pending_session(session_id: str, employee_id: str = ""):
+    global bubble_pending_target
+    sid = str(session_id or "").strip()
+    eid = str(employee_id or "").strip()
+    if not sid and not eid:
+        return
+    with bubble_pending_lock:
+        bubble_pending_target = {"session_id": sid, "employee_id": eid}
+
+
+def _emit_bubble_notification(payload: dict) -> bool:
+    cb = bubble_notify_callback
+    if not cb:
+        return False
+    try:
+        cb(dict(payload or {}))
+        return True
+    except Exception as e:
+        log_msg("WARN", f"Bubble notification failed: {e}")
+        return False
 
 
 def _host_without_port(value: str) -> str:
@@ -114,6 +167,7 @@ server_logs = []
 MAX_LOG_LINES = 500
 DISPLAY_HISTORY_LIMIT = int(os.environ.get("HERMES_DESKTOP_DISPLAY_HISTORY_LIMIT", "80"))
 AGENT_REPLAY_HISTORY_LIMIT = int(os.environ.get("HERMES_DESKTOP_AGENT_HISTORY_LIMIT", "80"))
+MAX_PERSISTED_SESSION_MESSAGES = int(os.environ.get("HERMES_DESKTOP_MAX_PERSISTED_MESSAGES", "400"))
 LOG_FILE = Path(__file__).resolve().parent / "desktop_server.log"
 
 def log_msg(level: str, msg: str):
@@ -397,6 +451,67 @@ def _finalize_agent_turn(session_id: str, session: dict, result: dict, message: 
     log_msg("INFO", f"[{session_id[:12]}] Turn stats: api_calls={_api_calls}, total_messages={_msg_count}")
     return final_text
 
+def _trim_messages_for_persistence(messages: list[dict], limit: int = MAX_PERSISTED_SESSION_MESSAGES) -> list[dict]:
+    """Keep desktop sessions bounded so one bad turn cannot freeze the UI."""
+    full = []
+    for msg in messages or []:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        if role == "assistant":
+            role = "assistant"
+        elif role == "agent":
+            role = "assistant"
+        elif role == "user":
+            role = "user"
+        elif role == "system":
+            role = "system"
+        else:
+            continue
+        text = _message_text(msg.get("content")).strip()
+        upper = text.upper()
+        if not text:
+            continue
+        if "CONTEXT COMPACTION" in upper and "REFERENCE ONLY" in upper:
+            continue
+        if upper.startswith("[CONTEXT COMPACTION"):
+            continue
+        full.append({**msg, "role": role, "content": text})
+    limit = max(20, int(limit or 400))
+    if len(full) <= limit:
+        return full
+    trimmed = full[-limit:]
+    while trimmed and trimmed[0].get("role") in {"assistant", "tool"}:
+        trimmed = trimmed[1:]
+    return trimmed or full[-limit:]
+
+def _final_text_from_result(result: dict) -> str:
+    final_text = str((result or {}).get("final_response") or "")
+    if final_text:
+        return final_text
+    for msg in reversed((result or {}).get("messages") or []):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            text = _message_text(msg.get("content")).strip()
+            if text:
+                return text
+    return ""
+
+def _safe_result_for_desktop(result: dict, persisted_user_history: list[dict]) -> dict:
+    """Persist only the known desktop history plus the final assistant text.
+
+    Some agent backends return an oversized transcript. Blindly writing that
+    transcript can duplicate the entire conversation and make the desktop UI
+    unresponsive. The desktop DB is the source of truth for prior messages, so
+    keep the returned transcript out of persistence.
+    """
+    if not isinstance(result, dict):
+        return result
+    final_text = _final_text_from_result(result)
+    safe_messages = list(persisted_user_history or [])
+    if final_text:
+        safe_messages.append({"role": "assistant", "content": final_text})
+    return {**result, "messages": _trim_messages_for_persistence(safe_messages), "final_response": final_text}
+
 def _employee_tasks_path(employee_id: str) -> Path:
     return _employee_dir(employee_id) / "tasks" / "index.json"
 
@@ -467,6 +582,87 @@ def _update_employee_task(employee_id: str, task_id: str, **updates) -> dict | N
 def _find_employee_task(employee_id: str, task_id: str) -> dict | None:
     data = _load_employee_tasks(employee_id)
     return next((task for task in data.get("tasks", []) if task.get("id") == task_id), None)
+
+def _latest_employee_task_for_session(employee_id: str, session_id: str) -> dict | None:
+    sid = str(session_id or "")
+    tasks = _latest_employee_tasks(employee_id, limit=20)
+    for status in ("planning", "running"):
+        for task in tasks:
+            if task.get("session_id") == sid and task.get("status") == status:
+                return task
+    return next((task for task in tasks if task.get("session_id") == sid), None)
+
+def _plain_notification_text(text: str, limit: int = 90) -> str:
+    value = _strip_think_blocks_text(str(text or ""))
+    value = re.sub(r"`{1,3}[^`]*`{1,3}", "", value)
+    value = re.sub(r"[*_#>~\[\]()]|https?://\S+", "", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    if not value:
+        return ""
+    return value[:limit].rstrip() + ("..." if len(value) > limit else "")
+
+def _looks_like_needs_user_input(text: str) -> bool:
+    value = str(text or "")
+    cues = [
+        "请确认", "等待你确认", "需要你确认", "确认后", "请告诉我",
+        "请补充", "需要你补充", "需要你提供", "你希望", "你想要",
+        "是否", "哪一个", "哪个方向",
+    ]
+    return any(cue in value for cue in cues)
+
+def _notify_session_turn_finished(session_id: str, final_text: str):
+    if not final_text:
+        return
+    emp = _find_employee_by_session(session_id)
+    sender = "Hermes"
+    title = "任务完成啦"
+    message = "当前对话已经处理完成，点我查看结果。"
+    notify_type = "completed"
+    persistent = False
+    employee_id = ""
+
+    if emp:
+        employee_id = emp.get("id", "")
+        sender = emp.get("name") or "员工"
+        task = _latest_employee_task_for_session(employee_id, session_id)
+        if task and task.get("status") == "planning":
+            notify_type = "needs_confirm"
+            title = "需要你确认一下"
+            message = f"{sender} 已经整理好计划，等你确认后再开始干活。"
+            persistent = True
+        elif task and task.get("status") == "running":
+            notify_type = "completed"
+            title = "任务完成啦"
+            message = f"{sender} 已完成“{task.get('workflow_name') or task.get('title') or '当前任务'}”，点我查看结果。"
+            summary = _plain_notification_text(final_text, 120)
+            _update_employee_task(employee_id, task.get("id"), status="completed", completed_at=_now_iso(), result_summary=summary)
+        else:
+            summary = _plain_notification_text(final_text)
+            message = f"{sender} 已经回复你了。" + (f" {summary}" if summary else "")
+            if _looks_like_needs_user_input(final_text):
+                notify_type = "needs_input"
+                title = "需要你看一下"
+                persistent = True
+    else:
+        summary = _plain_notification_text(final_text)
+        if _looks_like_needs_user_input(final_text):
+            notify_type = "needs_input"
+            title = "需要你看一下"
+            message = "Hermes 需要你补充或确认信息，点我继续。"
+            persistent = True
+        elif summary:
+            message = f"处理完成：{summary}"
+
+    _emit_bubble_notification({
+        "type": notify_type,
+        "sender": sender,
+        "title": title,
+        "message": message,
+        "session_id": session_id,
+        "employee_id": employee_id,
+        "persistent": persistent,
+        "auto_hide_seconds": 0 if persistent else 10,
+    })
 
 def _read_file_safe(path: Path) -> str:
     try:
@@ -557,7 +753,19 @@ def _build_agent_prompt(emp: dict) -> str | None:
 
 # --- Session management ---
 sessions = {}  # {session_id: {"agent": AIAgent, "history": [], "created_at": datetime, "title": str}}
-session_lock = threading.Lock()
+session_lock = threading.RLock()
+prewarm_lock = threading.Lock()
+prewarming_sessions = set()
+background_review_lock = threading.Lock()
+background_review_pending: dict[str, dict] = {}
+background_review_timer = None
+last_user_activity_at = time.time()
+SESSION_LOCK_UI_TIMEOUT = float(os.environ.get("HERMES_SESSION_LOCK_UI_TIMEOUT", "0.3"))
+INTERRUPT_JOIN_TIMEOUT = float(os.environ.get("HERMES_INTERRUPT_JOIN_TIMEOUT", "0.2"))
+BACKGROUND_REVIEW_IDLE_SECONDS = float(os.environ.get("HERMES_DESKTOP_BACKGROUND_REVIEW_IDLE_SECONDS", "900"))
+BACKGROUND_REVIEW_DISPUTE_COOLDOWN_SECONDS = float(
+    os.environ.get("HERMES_DESKTOP_BACKGROUND_REVIEW_DISPUTE_COOLDOWN_SECONDS", "3600")
+)
 session_db = SessionDB(HERMES_HOME / "state.db")
 DESKTOP_STATE_PATH = HERMES_HOME / "desktop-client" / "state.json"
 
@@ -583,6 +791,147 @@ def schedule_shutdown():
         shutdown_timer.daemon = True
         shutdown_timer.start()
         log_msg("INFO", f"Browser disconnected, server will exit in {WS_SHUTDOWN_GRACE_SECONDS:.0f}s if no reconnect...")
+
+def _desktop_background_review_enabled() -> bool:
+    value = os.environ.get("HERMES_DESKTOP_BACKGROUND_REVIEW")
+    if value is None or str(value).strip() == "":
+        return True
+    return is_truthy_value(value)
+
+def _mark_user_activity() -> None:
+    global last_user_activity_at
+    last_user_activity_at = time.time()
+
+def _desktop_has_running_turn() -> bool:
+    with session_lock:
+        return any(bool((s or {}).get("running")) for s in sessions.values())
+
+def _looks_like_tool_dispute(message: str) -> bool:
+    text = (message or "").lower()
+    if not text:
+        return False
+    dispute_terms = (
+        "没执行",
+        "没有执行",
+        "没调用",
+        "没有调用",
+        "没成功",
+        "没有成功",
+        "没反应",
+        "没创建",
+        "没有创建",
+        "没删除",
+        "没有删除",
+        "空白界面",
+        "脏数据",
+        "幻觉",
+        "假装",
+        "沙箱",
+        "隔离",
+        "tool_turns=0",
+        "fake tool",
+        "not actually",
+        "did not run",
+    )
+    return any(term in text for term in dispute_terms)
+
+def _schedule_background_review_check(delay: float | None = None) -> None:
+    global background_review_timer
+    if not _desktop_background_review_enabled():
+        return
+    delay = max(1.0, float(BACKGROUND_REVIEW_IDLE_SECONDS if delay is None else delay))
+    with background_review_lock:
+        if background_review_timer and background_review_timer.is_alive():
+            return
+        background_review_timer = threading.Timer(delay, _run_queued_background_review_if_idle)
+        background_review_timer.daemon = True
+        background_review_timer.start()
+
+def _run_queued_background_review_if_idle() -> None:
+    global background_review_timer
+    with background_review_lock:
+        background_review_timer = None
+
+    if not _desktop_background_review_enabled():
+        with background_review_lock:
+            background_review_pending.clear()
+        return
+
+    now = time.time()
+    idle_wait = (last_user_activity_at + BACKGROUND_REVIEW_IDLE_SECONDS) - now
+    if _desktop_has_running_turn() or idle_wait > 0:
+        _schedule_background_review_check(max(5.0, idle_wait if idle_wait > 0 else 15.0))
+        return
+
+    with background_review_lock:
+        if not background_review_pending:
+            return
+        session_id, job = min(
+            background_review_pending.items(),
+            key=lambda item: float(item[1].get("queued_at") or 0),
+        )
+        background_review_pending.pop(session_id, None)
+
+    try:
+        spawn = job.get("spawn")
+        if callable(spawn):
+            log_msg("INFO", f"[{session_id[:12]}] Running queued desktop background review")
+            spawn(*job.get("args", ()), **job.get("kwargs", {}))
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Queued background review failed: {e}")
+
+    with background_review_lock:
+        has_more = bool(background_review_pending)
+    if has_more:
+        _schedule_background_review_check(60.0)
+
+def _install_desktop_background_review_scheduler(agent: AIAgent, session_id: str) -> None:
+    original_spawn = getattr(agent, "_spawn_background_review", None)
+    if not callable(original_spawn) or getattr(agent, "_desktop_background_review_scheduler", False):
+        return
+
+    if not _desktop_background_review_enabled():
+        agent._memory_nudge_interval = 0
+        agent._skill_nudge_interval = 0
+        log_msg("INFO", f"[{session_id[:12]}] Desktop background review disabled by env")
+        return
+
+    def _queued_background_review(*args, **kwargs):
+        now = time.time()
+        with session_lock:
+            current = sessions.get(session_id)
+            if current and current.get("last_fake_execution_blocked"):
+                log_msg(
+                    "WARN",
+                    f"[{session_id[:12]}] Skipping desktop background review after blocked fake execution",
+                )
+                return None
+            if current:
+                disputed_at = float(current.get("last_tool_dispute_at") or 0)
+                if disputed_at and now - disputed_at < BACKGROUND_REVIEW_DISPUTE_COOLDOWN_SECONDS:
+                    log_msg(
+                        "WARN",
+                        f"[{session_id[:12]}] Skipping desktop background review during tool-dispute cooldown",
+                    )
+                    return None
+        with background_review_lock:
+            background_review_pending[session_id] = {
+                "spawn": original_spawn,
+                "args": args,
+                "kwargs": kwargs,
+                "queued_at": now,
+            }
+        log_msg(
+            "INFO",
+            f"[{session_id[:12]}] Desktop background review queued; "
+            f"will run after {int(BACKGROUND_REVIEW_IDLE_SECONDS)}s idle",
+        )
+        _schedule_background_review_check(BACKGROUND_REVIEW_IDLE_SECONDS)
+        return None
+
+    agent._desktop_background_review_scheduler = True
+    agent._desktop_background_review_original_spawn = original_spawn
+    agent._spawn_background_review = _queued_background_review
 
 def do_shutdown():
     global shutdown_timer
@@ -657,7 +1006,8 @@ def _latest_main_session_id() -> str:
         )
         for row in rows:
             sid = row.get("id") or row.get("session_id") or ""
-            if sid and sid not in employee_sids:
+            msg_count = int(row.get("message_count") or 0)
+            if sid and sid not in employee_sids and msg_count > 0:
                 return sid
     except Exception as e:
         log_msg("WARN", f"Failed to find latest main session from DB: {e}")
@@ -666,9 +1016,18 @@ def _latest_main_session_id() -> str:
         candidates = [
             (sid, s)
             for sid, s in sessions.items()
-            if sid not in employee_sids
+            if sid not in employee_sids and (s.get("history") or s.get("agent"))
         ]
     if not candidates:
+        # Last resort: any non-employee session with messages
+        try:
+            rows = session_db.list_sessions_rich(source=SESSION_SOURCE, limit=5, order_by_last_active=True)
+            for row in rows:
+                sid = row.get("id") or ""
+                if sid and sid not in employee_sids and int(row.get("message_count") or 0) > 0:
+                    return sid
+        except Exception:
+            pass
         return ""
     candidates.sort(key=lambda item: item[1].get("created_at") or datetime.min, reverse=True)
     return candidates[0][0]
@@ -799,8 +1158,51 @@ def _prepare_agent_history_for_turn(history: list[dict]) -> tuple[list[dict], li
         start = max(0, len(full) - limit)
     return full[:start], full[start:]
 
+def _requires_real_tool_action(message: str) -> bool:
+    text = str(message or "").lower()
+    if not text:
+        return False
+    action_words = [
+        "\u521b\u5efa", "\u65b0\u5efa", "\u5199\u5165", "\u5199\u4e2a", "\u4fdd\u5b58",
+        "\u5220\u9664", "\u590d\u5236", "\u79fb\u52a8", "\u91cd\u547d\u540d",
+        "\u6253\u5f00", "\u5173\u95ed", "\u70b9\u51fb", "\u8f93\u5165", "\u53d1\u9001",
+        "\u7c98\u8d34", "\u4e0b\u8f7d", "\u4e0a\u4f20", "\u8fd0\u884c", "\u6267\u884c",
+        "\u64cd\u4f5c", "\u6d4b\u8bd5", "\u8bd5\u8bd5", "\u5c1d\u8bd5", "\u751f\u6210",
+        "create", "write", "save", "delete", "copy", "move", "rename",
+        "open", "click", "type", "send", "paste", "download", "upload", "run",
+        "execute", "operate", "test", "try", "generate",
+    ]
+    target_words = [
+        "\u684c\u9762", "\u6587\u4ef6", "\u6587\u4ef6\u5939", "\u76ee\u5f55",
+        "\u5fae\u4fe1", "qq", "\u7a97\u53e3", "\u672c\u5730", "\u7535\u8111",
+        "\u597d\u53cb", "\u6d88\u606f", "\u811a\u672c", "\u6280\u80fd",
+        "desktop", "file", "folder", "directory", "wechat", "window", "local",
+        "message", "script", "skill",
+    ]
+    return any(word in text for word in action_words) and any(word in text for word in target_words)
+
+def _result_used_real_tool(result: dict) -> bool:
+    if not isinstance(result, dict):
+        return False
+    for msg in result.get("messages") or []:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "tool" or msg.get("tool_call_id") or msg.get("tool_name"):
+            return True
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            return True
+    return False
+
+def _fake_execution_guard_text() -> str:
+    return (
+        "我刚才没有真正调用任何本地工具，所以不能说已经执行成功。"
+        "这类任务必须实际调用文件/终端/桌面自动化工具并验证结果后，才能告诉你完成。"
+        "请重新发送这条任务，我会按工具结果一步一步执行。"
+    )
+
 def _replace_messages_preserving_timestamps(session_id: str, messages: list[dict]) -> None:
     """Replace messages while preserving timestamps for already persisted rows."""
+    messages = _trim_messages_for_persistence(messages)
     old_timestamps: list[float] = []
     try:
         with session_db._lock:
@@ -1008,11 +1410,47 @@ def _emit_session_event(session_id: str, event: dict):
         except Exception as e:
             log_msg("WARN", f"[{session_id[:12]}] event callback failed: {e}")
 
+def _combine_system_prompts(*parts: str | None) -> str:
+    return "\n\n".join(str(part).strip() for part in parts if str(part or "").strip())
+
+def _desktop_runtime_system_prompt() -> str:
+    desktop_path = Path.home() / "Desktop"
+    return (
+        "Hermes Desktop runtime rules:\n"
+        f"- You are running in the user's real local Windows desktop app. "
+        f"The user profile is {Path.home()} and the Desktop folder is {desktop_path}.\n"
+        "- The terminal tool is configured as a local terminal. Do not claim it is a sandbox, "
+        "container, or virtual filesystem unless a tool result proves that for this run.\n"
+        "- Windows terminal shells may differ. Prefer explicit absolute Windows paths for "
+        "user-visible files, and verify filesystem operations with read_file, Test-Path, "
+        "Get-Item, or an equivalent tool result before saying they succeeded.\n"
+        "- Never tell the user a file was created, deleted, a window was clicked, text was typed, "
+        "or a message was sent unless the latest tool result confirms the action or the user confirms it.\n"
+        "- If a tool call fails, returns an API quota/rate-limit error, or has an uncertain result, "
+        "say that plainly and ask for the smallest useful next verification.\n"
+        "- For desktop UI automation, use the available computer_use/cua-driver capability according "
+        "to its actual schema and returned result. Do not invent tool names, parameters, paths, or outcomes.\n"
+        "- When a task involves a skill and needs scripts, create, edit, debug, and run those scripts "
+        "inside that skill's own scripts directory. Do not scatter skill scripts on the Desktop, "
+        "project root, global scripts folders, or tools folders unless the user explicitly asks.\n"
+        "- If the user contradicts a previous claimed success, trust the user's observation and re-check "
+        "from the current state instead of defending the earlier result."
+    )
+
 def create_agent(session_id: str) -> AIAgent:
     cfg = load_config()
     agent_cfg = cfg.get("agent", {})
-    system_prompt = (agent_cfg.get("system_prompt", "") or "").strip()
+    system_prompt = _combine_system_prompts(
+        agent_cfg.get("system_prompt", ""),
+        _desktop_runtime_system_prompt(),
+    )
     model, runtime = _resolve_desktop_runtime(cfg)
+    enabled_toolsets = _load_enabled_toolsets(cfg)
+    log_msg(
+        "INFO",
+        f"[{session_id[:12]}] Desktop agent toolsets: "
+        f"{', '.join(enabled_toolsets or []) or 'default'}",
+    )
 
     agent = AIAgent(
         model=model,
@@ -1033,7 +1471,7 @@ def create_agent(session_id: str) -> AIAgent:
         reasoning_config=_load_reasoning_config(cfg),
         service_tier=_load_service_tier(cfg),
         request_overrides=runtime.get("request_overrides"),
-        enabled_toolsets=_load_enabled_toolsets(cfg),
+        enabled_toolsets=enabled_toolsets,
         fallback_model=_load_fallback_chain(cfg),
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_DESKTOP_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_DESKTOP_PASS_SESSION_ID")),
@@ -1066,7 +1504,93 @@ def create_agent(session_id: str) -> AIAgent:
             session_id, {"type": "status", "kind": str(kind), "text": str(text or kind)}
         ),
     )
+    agent._desktop_base_system_prompt = system_prompt
+    agent._tool_use_enforcement = True
+    _install_desktop_background_review_scheduler(agent, session_id)
+    invalidate_prompt = getattr(agent, "_invalidate_system_prompt", None)
+    if callable(invalidate_prompt):
+        try:
+            invalidate_prompt()
+        except Exception:
+            pass
+    try:
+        fresh_prompt = agent._build_system_prompt(None)
+        agent._cached_system_prompt = fresh_prompt
+        if session_db:
+            session_db.update_system_prompt(session_id, fresh_prompt)
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Failed to refresh desktop system prompt: {e}")
     return agent
+
+def _apply_employee_prompt_to_agent(agent: AIAgent, session_id: str) -> None:
+    emp = _find_employee_by_session(session_id)
+    if not emp:
+        return
+    sp = _build_agent_prompt(emp)
+    if sp:
+        base_prompt = getattr(agent, "_desktop_base_system_prompt", "") or agent.ephemeral_system_prompt
+        agent.ephemeral_system_prompt = _combine_system_prompts(base_prompt, sp)
+
+def _prewarm_session_agent(session_id: str, reason: str = "startup") -> None:
+    """Create the agent in the background so the first user message starts faster."""
+    try:
+        sid = _validate_session_id(session_id)
+    except Exception:
+        return
+    with prewarm_lock:
+        if sid in prewarming_sessions:
+            return
+        prewarming_sessions.add(sid)
+
+    def _worker():
+        started = time.time()
+        try:
+            _ensure_session_record(sid)
+            with session_lock:
+                s = sessions.setdefault(sid, _empty_session())
+                has_agent = s.get("agent") is not None
+                is_running = bool(s.get("running"))
+            if has_agent or is_running:
+                return
+
+            log_msg("INFO", f"[{sid[:12]}] Prewarming agent ({reason})...")
+            history = _load_history_from_db(sid)
+            agent = create_agent(sid)
+            _apply_employee_prompt_to_agent(agent, sid)
+
+            with session_lock:
+                s = sessions.setdefault(sid, _empty_session())
+                if not s.get("history"):
+                    s["history"] = history
+                if s.get("agent") is None and not s.get("running"):
+                    s["agent"] = agent
+                    elapsed = time.time() - started
+                    log_msg("INFO", f"[{sid[:12]}] Agent prewarmed in {elapsed:.2f}s")
+        except Exception as e:
+            log_msg("WARN", f"[{sid[:12]}] Agent prewarm failed: {e}")
+        finally:
+            with prewarm_lock:
+                prewarming_sessions.discard(sid)
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+def _wait_for_prewarmed_agent(session_id: str, timeout: float = 8.0) -> AIAgent | None:
+    deadline = time.time() + max(0.0, timeout)
+    while time.time() < deadline:
+        with session_lock:
+            s = sessions.get(session_id)
+            if s and s.get("agent") is not None:
+                return s.get("agent")
+        with prewarm_lock:
+            still_prewarming = session_id in prewarming_sessions
+        if not still_prewarming:
+            return None
+        time.sleep(0.1)
+    with session_lock:
+        s = sessions.get(session_id)
+        if s and s.get("agent") is not None:
+            return s.get("agent")
+    return None
 
 def get_or_create_session(session_id: str):
     with session_lock:
@@ -1110,6 +1634,25 @@ async def api_client_log(request: Request):
     detail = json.dumps(payload, ensure_ascii=False, default=str)[:500]
     log_msg("CLIENT", f"{event}: {detail}")
     return {"ok": True}
+
+@app.post("/api/bubble/notify")
+async def api_bubble_notify(request: Request):
+    """Send a desktop bubble notification if the native bubble is available."""
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    ok = _emit_bubble_notification(payload)
+    return {"ok": ok}
+
+@app.get("/api/bubble/pending")
+async def api_bubble_pending():
+    """Return and clear the session requested by a bubble notification click."""
+    global bubble_pending_target
+    with bubble_pending_lock:
+        target = dict(bubble_pending_target)
+        bubble_pending_target = {"session_id": "", "employee_id": ""}
+    return target
 
 # ========== Employee API ==========
 
@@ -1660,12 +2203,15 @@ async def new_session():
     with session_lock:
         if session_id not in sessions:
             sessions[session_id] = _empty_session()
+    _prewarm_session_agent(session_id, reason="new-session")
     return {"session_id": session_id}
 
 @app.get("/api/main-session")
 async def get_main_session():
     """Return the remembered main-chat session, falling back to latest non-employee chat."""
     session_id = _get_main_session_id()
+    if session_id:
+        _prewarm_session_agent(session_id, reason="main-session")
     return {"session_id": session_id}
 
 @app.post("/api/main-session")
@@ -1676,6 +2222,7 @@ async def set_main_session(request: Request):
         raise HTTPException(status_code=400, detail="Missing session_id")
     _ensure_session_record(session_id)
     _set_main_session_id(session_id)
+    _prewarm_session_agent(session_id, reason="set-main-session")
     return {"ok": True, "session_id": session_id}
 
 @app.get("/api/sessions")
@@ -1739,22 +2286,38 @@ async def get_session_status(session_id: str):
         session_id = _validate_session_id(session_id)
     except HTTPException:
         raise
-    with session_lock:
+    acquired = session_lock.acquire(timeout=SESSION_LOCK_UI_TIMEOUT)
+    if not acquired:
+        log_msg("WARN", f"[{session_id[:12]}] Status lock busy; reporting stopping")
+        return {"ok": True, "session_id": session_id, "running": False, "stopping": True, "lock_busy": True}
+    try:
         session = sessions.get(session_id)
         thread = (session or {}).get("agent_thread")
         interrupting = bool((session or {}).get("interrupt_requested"))
         running = (bool((session or {}).get("running")) or bool(thread and thread.is_alive())) and not interrupting
+    finally:
+        session_lock.release()
     return {"ok": True, "session_id": session_id, "running": running, "stopping": interrupting}
 
 @app.post("/api/session/{session_id}/interrupt")
 async def interrupt_session(session_id: str):
-    with session_lock:
+    acquired = session_lock.acquire(timeout=SESSION_LOCK_UI_TIMEOUT)
+    if not acquired:
+        log_msg("WARN", f"[{session_id[:12]}] Interrupt lock busy")
+        return {"ok": True, "status": "interrupting", "lock_busy": True}
+    try:
         session = sessions.get(session_id)
         agent = (session or {}).get("agent")
         thread = (session or {}).get("agent_thread")
         running = bool((session or {}).get("running")) or bool(thread and thread.is_alive())
         if session and running:
             session["interrupt_requested"] = True
+            session["running"] = False
+            session["agent_thread"] = None
+            session["agent"] = None
+            session["run_id"] = int(session.get("run_id") or 0) + 1
+    finally:
+        session_lock.release()
 
     if not session or not agent:
         return {"ok": False, "status": "idle"}
@@ -1765,9 +2328,11 @@ async def interrupt_session(session_id: str):
             _emit_session_event(session_id, {"type": "status", "text": "interrupting"})
             return {"ok": True, "status": "interrupted" if running else "idle"}
         except Exception as e:
-            log_msg("ERROR", f"[{session_id[:12]}] Interrupt failed: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    return {"ok": False, "status": "unsupported"}
+            log_msg("WARN", f"[{session_id[:12]}] Interrupt signal failed after local detach: {e}")
+            return {"ok": True, "status": "detached"}
+    log_msg("INFO", f"[{session_id[:12]}] Interrupt detached unsupported agent")
+    _emit_session_event(session_id, {"type": "status", "text": "interrupting"})
+    return {"ok": True, "status": "detached"}
 
 @app.delete("/api/session/{session_id}")
 async def delete_session(session_id: str):
@@ -2261,7 +2826,12 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
     # Queue for cross-thread streaming
     msg_queue: asyncio.Queue = asyncio.Queue()
     main_loop = asyncio.get_running_loop()
-    stream_state = {"chunks": []}
+    stream_state = {
+        "chunks": [],
+        "guard_required": False,
+        "tool_seen": False,
+        "buffered_events": [],
+    }
     client_connected = True
 
     async def safe_send(payload: dict) -> bool:
@@ -2278,8 +2848,17 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
     def emit_event(event: dict):
         """Called from agent thread; schedule push to WS."""
         try:
+            if event.get("type") == "tool":
+                stream_state["tool_seen"] = True
+                buffered = list(stream_state.get("buffered_events") or [])
+                stream_state["buffered_events"] = []
+                for buffered_event in buffered:
+                    main_loop.call_soon_threadsafe(msg_queue.put_nowait, buffered_event)
             if event.get("type") == "delta" and event.get("text"):
                 stream_state["chunks"].append(str(event.get("text") or ""))
+                if stream_state.get("guard_required") and not stream_state.get("tool_seen"):
+                    stream_state.setdefault("buffered_events", []).append(event)
+                    return
         except Exception:
             pass
         main_loop.call_soon_threadsafe(
@@ -2291,6 +2870,9 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             data = await websocket.receive_json()
             message = data.get("message", "").strip()
             stream_state["chunks"] = []
+            stream_state["buffered_events"] = []
+            stream_state["tool_seen"] = False
+            stream_state["guard_required"] = _requires_real_tool_action(message)
 
             if not message:
                 await websocket.send_json({"type": "error", "text": "Empty message"})
@@ -2300,11 +2882,15 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 await websocket.send_json({"type": "info", "text": "pong"})
                 continue
 
+            _mark_user_activity()
+
             # Get session and lazily create agent on first message
             with session_lock:
                 if session_id not in sessions:
                     sessions[session_id] = _empty_session()
                 s = sessions[session_id]
+                if _looks_like_tool_dispute(message):
+                    s["last_tool_dispute_at"] = time.time()
                 s["callbacks"] = {"emit": emit_event}
                 already_running = bool(s.get("running"))
             if already_running:
@@ -2313,16 +2899,16 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             if s["agent"] is None:
                 try:
                     await websocket.send_json({"type": "status", "text": "Initializing agent..."})
-                    log_msg("INFO", f"Creating agent for session {session_id[:12]}...")
-                    _ensure_session_record(session_id)
-                    s["agent"] = create_agent(session_id)
-                    # Inject employee system prompt if session_id matches an employee
-                    emp = _find_employee_by_session(session_id)
-                    if emp:
-                        sp = _build_agent_prompt(emp)
-                        if sp:
-                            s["agent"].ephemeral_system_prompt = sp
-                    log_msg("INFO", f"Agent created for {session_id[:12]}")
+                    prewarmed_agent = _wait_for_prewarmed_agent(session_id, timeout=8.0)
+                    if prewarmed_agent is not None:
+                        s["agent"] = prewarmed_agent
+                        log_msg("INFO", f"Using prewarmed agent for {session_id[:12]}")
+                    else:
+                        log_msg("INFO", f"Creating agent for session {session_id[:12]}...")
+                        _ensure_session_record(session_id)
+                        s["agent"] = create_agent(session_id)
+                        log_msg("INFO", f"Agent created for {session_id[:12]}")
+                    _apply_employee_prompt_to_agent(s["agent"], session_id)
                 except Exception as e:
                     log_msg("ERROR", f"Agent creation failed: {e}")
                     await websocket.send_json({"type": "error", "text": f"Failed to initialize agent: {e}"})
@@ -2332,9 +2918,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             # Always refresh employee prompt (profile may have been edited)
             emp = _find_employee_by_session(session_id)
             if emp and session["agent"]:
-                sp = _build_agent_prompt(emp)
-                if sp:
-                    session["agent"].ephemeral_system_prompt = sp
+                _apply_employee_prompt_to_agent(session["agent"], session_id)
 
             # Check for session switch
             if message.startswith("/switch "):
@@ -2393,25 +2977,34 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                         conversation_history=agent_history,
                         task_id=session_id,
                     )
-                    if history_prefix and isinstance(r, dict) and isinstance(r.get("messages"), list):
-                        r = {**r, "messages": history_prefix + r["messages"]}
-                    if isinstance(r, dict) and isinstance(r.get("messages"), list):
-                        result_messages = list(r.get("messages") or [])
-                        has_current_user = any(
-                            m.get("role") == "user" and _message_text(m.get("content")).strip() == message
-                            for m in result_messages[max(0, len(conversation_history) - 2):]
+                    used_real_tool = _result_used_real_tool(r)
+                    if _requires_real_tool_action(message) and not used_real_tool:
+                        log_msg(
+                            "WARN",
+                            f"[{session_id[:12]}] Blocked text-only execution claim for tool-required request",
                         )
-                        if not has_current_user:
-                            if len(result_messages) < len(conversation_history):
-                                result_messages = persisted_user_history + result_messages
-                            else:
-                                insert_at = min(len(conversation_history), len(result_messages))
-                                result_messages = (
-                                    result_messages[:insert_at]
-                                    + [{"role": "user", "content": message}]
-                                    + result_messages[insert_at:]
-                                )
-                            r = {**r, "messages": result_messages}
+                        stream_state["chunks"] = []
+                        stream_state["buffered_events"] = []
+                        with session_lock:
+                            current = sessions.get(session_id)
+                            if current is session:
+                                current["last_fake_execution_blocked"] = True
+                        r = {
+                            "messages": persisted_user_history + [
+                                {"role": "assistant", "content": _fake_execution_guard_text()}
+                            ],
+                            "final_response": _fake_execution_guard_text(),
+                            "api_calls": (r or {}).get("api_calls", 1) if isinstance(r, dict) else 1,
+                            "__desktop_blocked_fake_execution": True,
+                            "__desktop_discard_stream": True,
+                        }
+                    elif used_real_tool:
+                        with session_lock:
+                            current = sessions.get(session_id)
+                            if current is session:
+                                current["last_fake_execution_blocked"] = False
+                    if isinstance(r, dict):
+                        r = _safe_result_for_desktop(r, persisted_user_history)
                     with session_lock:
                         current = sessions.get(session_id)
                         stale_or_cancelled = (
@@ -2457,7 +3050,18 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             agent_thread.start()
 
             # Drain queue while agent runs (streaming output)
+            cancelled_by_interrupt = False
             while agent_thread.is_alive() or not msg_queue.empty():
+                with session_lock:
+                    current = sessions.get(session_id)
+                    cancelled_by_interrupt = (
+                        current is not session
+                        or int((current or {}).get("run_id") or 0) != run_id
+                        or bool((current or {}).get("interrupt_requested"))
+                        or (current or {}).get("agent_thread") is not agent_thread
+                    )
+                if cancelled_by_interrupt:
+                    break
                 try:
                     msg = await asyncio.wait_for(msg_queue.get(), timeout=0.05)
                     if msg is None:  # Sentinel — agent finished
@@ -2466,12 +3070,18 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 except asyncio.TimeoutError:
                     continue
 
-            agent_thread.join(timeout=30)
+            agent_thread.join(timeout=INTERRUPT_JOIN_TIMEOUT if cancelled_by_interrupt else 30)
             with session_lock:
                 if not agent_thread.is_alive():
                     session["running"] = False
                     session["agent_thread"] = None
                     session["interrupt_requested"] = False
+            if cancelled_by_interrupt and "result" not in result_holder and "error" not in error_holder:
+                result_holder["result"] = {
+                    "messages": persisted_user_history,
+                    "final_response": "",
+                    "interrupted": True,
+                }
 
             # Process result
             if "result" in result_holder:
@@ -2496,7 +3106,8 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     await safe_send({"type": "info", "text": "Interrupted"})
                 if interrupted_unfinalized:
                     final_text = ""
-                merged_text = final_text if result.get("__desktop_finalized") else _merge_streamed_and_final_text("".join(stream_state.get("chunks") or []), final_text)
+                streamed_text = "" if result.get("__desktop_discard_stream") else "".join(stream_state.get("chunks") or [])
+                merged_text = final_text if result.get("__desktop_finalized") else _merge_streamed_and_final_text(streamed_text, final_text)
                 if merged_text and not result.get("__desktop_finalized") and not interrupted_unfinalized:
                     final_text = merged_text
                     if full_messages:
@@ -2518,6 +3129,11 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     "text": final_text or "(no response)",
                     "interrupted": bool(result.get("interrupted")),
                 })
+                if final_text and not result.get("interrupted"):
+                    try:
+                        _notify_session_turn_finished(session_id, final_text)
+                    except Exception as e:
+                        log_msg("WARN", f"[{session_id[:12]}] Bubble turn notification failed: {e}")
                 try:
                     if not session_db.get_session_title(session_id):
                         title = _default_title_from_history(full_messages, message[:30])
@@ -2574,6 +3190,10 @@ if __name__ == "__main__":
     import argparse
     _ap = argparse.ArgumentParser()
     _ap.add_argument("--bubble-only", action="store_true", help="Start with floating bubble only (no main window)")
+    _ap.add_argument("--serve-only", action="store_true", help="Start only the local Hermes server; an external launcher will open the UI")
+    _ap.add_argument("--browser", action="store_true", help="Open Hermes in the system browser instead of a native pywebview window")
+    _ap.add_argument("--app-window", action="store_true", help="Open Hermes in a browser app window without the normal browser chrome")
+    _ap.add_argument("--native", action="store_true", help="Force the native pywebview window")
     _args, _unknown = _ap.parse_known_args()
 
     try:
@@ -2588,6 +3208,86 @@ if __name__ == "__main__":
     url = f"http://{host}:{port}"
 
     BUBBLE_ONLY = _args.bubble_only
+    SERVE_ONLY = _args.serve_only
+    APP_WINDOW_MODE = (_args.app_window or is_truthy_value(os.environ.get("HERMES_DESKTOP_APP_WINDOW"))) and not _args.native
+    BROWSER_MODE = (_args.browser or APP_WINDOW_MODE or is_truthy_value(os.environ.get("HERMES_DESKTOP_BROWSER"))) and not _args.native
+    if (BROWSER_MODE or SERVE_ONLY) and sys.platform != "win32":
+        register_browser_bubble_fallbacks()
+
+    def _open_web_app_window(target_url: str) -> bool:
+        """Open the desktop UI as a standalone app-like browser window."""
+        import subprocess
+
+        candidates: list[Path] = []
+        for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+            base = os.environ.get(env_name)
+            if not base:
+                continue
+            root = Path(base)
+            candidates.extend([
+                root / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+                root / "Google" / "Chrome" / "Application" / "chrome.exe",
+            ])
+
+        for exe in candidates:
+            if not exe.exists():
+                continue
+            try:
+                subprocess.Popen(
+                    [str(exe), f"--app={target_url}", "--new-window"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=0x00000008 if sys.platform == "win32" else 0,
+                )
+                log_msg("INFO", f"Opened Hermes app window with {exe}")
+                return True
+            except Exception as e:
+                log_msg("WARN", f"Failed to open app window with {exe}: {e}")
+        return False
+
+    def _open_browser_ui(target_url: str):
+        if APP_WINDOW_MODE and _open_web_app_window(target_url):
+            return
+        try:
+            import webbrowser
+            log_msg("INFO", f"Opening Hermes in browser: {target_url}")
+            webbrowser.open(target_url)
+        except Exception as e:
+            log_msg("ERROR", f"Failed to open browser: {type(e).__name__}: {e}")
+            log_msg("ERROR", traceback.format_exc())
+
+    def _preferred_desktop_python() -> str:
+        candidates = [
+            HERMES_HOME / "runtime" / "python311" / "python.exe",
+            HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return sys.executable
+
+    def _call_existing_desktop(action: str = "restore") -> bool:
+        try:
+            import urllib.request as _urlreq
+            import json as _json
+            _urlreq.urlopen(f"{url}/api/bubble/status", timeout=0.7).read()
+            payload = _json.dumps({"action": action}).encode("utf-8")
+            req = _urlreq.Request(
+                f"{url}/api/bubble/update",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            _urlreq.urlopen(req, timeout=0.7).read()
+            return True
+        except Exception:
+            return False
+
+    if not BUBBLE_ONLY and _call_existing_desktop("restore"):
+        if BROWSER_MODE:
+            _open_browser_ui(url)
+        log_msg("INFO", "Existing Hermes Desktop instance found; restored it and exiting this duplicate launcher")
+        os._exit(0)
 
     # Start uvicorn in a background daemon thread
     server_config = uvicorn.Config(app, host=host, port=port, log_level="warning")
@@ -2605,6 +3305,12 @@ if __name__ == "__main__":
         except Exception:
             pass
     log_msg("INFO", f"Server ready on port {port}")
+    try:
+        startup_main_session = _get_main_session_id()
+        if startup_main_session:
+            _prewarm_session_agent(startup_main_session, reason="startup-main-session")
+    except Exception as e:
+        log_msg("WARN", f"Startup main-session prewarm skipped: {e}")
 
     # --- Win32: set custom icon + floating bubble widget ---
     icon_path = str(STATIC_DIR / "hermes.ico")
@@ -2626,6 +3332,43 @@ if __name__ == "__main__":
             ("fRestore", _wt.BOOL),
             ("fIncUpdate", _wt.BOOL),
             ("rgbReserved", _ct.c_byte * 32),
+        ]
+
+    class _BLENDFUNCTION(_ct.Structure):
+        _fields_ = [
+            ("BlendOp", _wt.BYTE),
+            ("BlendFlags", _wt.BYTE),
+            ("SourceConstantAlpha", _wt.BYTE),
+            ("AlphaFormat", _wt.BYTE),
+        ]
+
+    class _BITMAPINFOHEADER(_ct.Structure):
+        _fields_ = [
+            ("biSize", _wt.DWORD),
+            ("biWidth", _ct.c_long),
+            ("biHeight", _ct.c_long),
+            ("biPlanes", _wt.WORD),
+            ("biBitCount", _wt.WORD),
+            ("biCompression", _wt.DWORD),
+            ("biSizeImage", _wt.DWORD),
+            ("biXPelsPerMeter", _ct.c_long),
+            ("biYPelsPerMeter", _ct.c_long),
+            ("biClrUsed", _wt.DWORD),
+            ("biClrImportant", _wt.DWORD),
+        ]
+
+    class _RGBQUAD(_ct.Structure):
+        _fields_ = [
+            ("rgbBlue", _wt.BYTE),
+            ("rgbGreen", _wt.BYTE),
+            ("rgbRed", _wt.BYTE),
+            ("rgbReserved", _wt.BYTE),
+        ]
+
+    class _BITMAPINFO(_ct.Structure):
+        _fields_ = [
+            ("bmiHeader", _BITMAPINFOHEADER),
+            ("bmiColors", _RGBQUAD * 1),
         ]
 
     def _configure_win32_signatures():
@@ -2684,12 +3427,28 @@ if __name__ == "__main__":
         _user32.BeginPaint.restype = _wt.HDC
         _user32.EndPaint.argtypes = [_wt.HWND, _ct.POINTER(_PAINTSTRUCT)]
         _user32.EndPaint.restype = _wt.BOOL
+        _user32.GetDC.argtypes = [_wt.HWND]
+        _user32.GetDC.restype = _wt.HDC
+        _user32.ReleaseDC.argtypes = [_wt.HWND, _wt.HDC]
+        _user32.ReleaseDC.restype = _ct.c_int
         _user32.GetClientRect.argtypes = [_wt.HWND, _ct.POINTER(_wt.RECT)]
         _user32.GetClientRect.restype = _wt.BOOL
+        _user32.GetWindowRect.argtypes = [_wt.HWND, _ct.POINTER(_wt.RECT)]
+        _user32.GetWindowRect.restype = _wt.BOOL
         _user32.FillRect.argtypes = [_wt.HDC, _ct.POINTER(_wt.RECT), _wt.HBRUSH]
         _user32.FillRect.restype = _ct.c_int
         _user32.FindWindowW.argtypes = [_wt.LPCWSTR, _wt.LPCWSTR]
         _user32.FindWindowW.restype = _wt.HWND
+        _user32.EnumWindows.argtypes = [_ct.c_void_p, _wt.LPARAM]
+        _user32.EnumWindows.restype = _wt.BOOL
+        _user32.GetWindowTextLengthW.argtypes = [_wt.HWND]
+        _user32.GetWindowTextLengthW.restype = _ct.c_int
+        _user32.GetWindowTextW.argtypes = [_wt.HWND, _wt.LPWSTR, _ct.c_int]
+        _user32.GetWindowTextW.restype = _ct.c_int
+        _user32.IsWindow.argtypes = [_wt.HWND]
+        _user32.IsWindow.restype = _wt.BOOL
+        _user32.IsWindowVisible.argtypes = [_wt.HWND]
+        _user32.IsWindowVisible.restype = _wt.BOOL
         _user32.LoadCursorW.argtypes = [_wt.HINSTANCE, _ct.c_void_p]
         _user32.LoadCursorW.restype = _HCURSOR
         _user32.LoadImageW.argtypes = [
@@ -2707,6 +3466,8 @@ if __name__ == "__main__":
         _user32.PostQuitMessage.restype = None
         _user32.SetWindowTextW.argtypes = [_wt.HWND, _wt.LPCWSTR]
         _user32.SetWindowTextW.restype = _wt.BOOL
+        _user32.DestroyWindow.argtypes = [_wt.HWND]
+        _user32.DestroyWindow.restype = _wt.BOOL
 
         _gdi32.CreateEllipticRgn.argtypes = [_ct.c_int, _ct.c_int, _ct.c_int, _ct.c_int]
         _gdi32.CreateEllipticRgn.restype = _wt.HRGN
@@ -2716,6 +3477,11 @@ if __name__ == "__main__":
         _gdi32.CreateCompatibleDC.restype = _wt.HDC
         _gdi32.CreateCompatibleBitmap.argtypes = [_wt.HDC, _ct.c_int, _ct.c_int]
         _gdi32.CreateCompatibleBitmap.restype = _wt.HBITMAP
+        _gdi32.CreateDIBSection.argtypes = [
+            _wt.HDC, _ct.POINTER(_BITMAPINFO), _wt.UINT,
+            _ct.POINTER(_ct.c_void_p), _wt.HANDLE, _wt.DWORD,
+        ]
+        _gdi32.CreateDIBSection.restype = _wt.HBITMAP
         _gdi32.SelectObject.argtypes = [_wt.HDC, _wt.HGDIOBJ]
         _gdi32.SelectObject.restype = _wt.HGDIOBJ
         _gdi32.CreateSolidBrush.argtypes = [_wt.COLORREF]
@@ -2755,6 +3521,37 @@ if __name__ == "__main__":
             ("lpszClassName", _wt.LPCWSTR),
         ]
 
+    _EnumWindowsProc = _ct.WINFUNCTYPE(_wt.BOOL, _wt.HWND, _wt.LPARAM)
+
+    def _find_hermes_main_window():
+        """Find either the native window or the Edge/Chrome app window."""
+        exact = _user32.FindWindowW(None, "Hermes Desktop")
+        if exact and _user32.IsWindow(exact):
+            return exact
+
+        found = {"hwnd": None}
+
+        @_EnumWindowsProc
+        def _enum_proc(hwnd, _lparam):
+            try:
+                if not _user32.IsWindowVisible(hwnd):
+                    return True
+                length = _user32.GetWindowTextLengthW(hwnd)
+                if length <= 0:
+                    return True
+                buf = _ct.create_unicode_buffer(length + 1)
+                _user32.GetWindowTextW(hwnd, buf, length + 1)
+                title = (buf.value or "").strip()
+                if "Hermes Desktop" in title:
+                    found["hwnd"] = hwnd
+                    return False
+            except Exception:
+                return True
+            return True
+
+        _user32.EnumWindows(_enum_proc, 0)
+        return found["hwnd"]
+
     WM_SETICON = 0x80
     GCL_HICON = -14
     GCL_HICONSM = -34
@@ -2775,6 +3572,7 @@ if __name__ == "__main__":
     WM_NCLBUTTONDBLCLK = 0x00A3
     HTCAPTION = 2
     WM_LBUTTONDBLCLK = 0x203
+    WM_LBUTTONDOWN = 0x0201
     WM_RBUTTONDOWN = 0x204
     WM_PAINT = 0x000F
     WM_DESTROY = 0x0002
@@ -2782,10 +3580,17 @@ if __name__ == "__main__":
     # GDI objects
     TRANSPARENT = 1
     SRCCOPY = 0x00CC0020
+    BI_RGB = 0
+    DIB_RGB_COLORS = 0
+    ULW_ALPHA = 0x00000002
+    AC_SRC_OVER = 0
+    AC_SRC_ALPHA = 1
     RGB_FORMAT = lambda r, g, b: (r) | (g << 8) | (b << 16)
     COLOR_KEY = RGB_FORMAT(255, 0, 255)  # magenta as transparent
 
-    BUBBLE_SIZE = 80
+    BUBBLE_SIZE = 56
+    NOTIFY_W = 286
+    NOTIFY_H = 144
 
     # Shared state for the floating bubble
     _bubble_state = {
@@ -2795,145 +3600,485 @@ if __name__ == "__main__":
         "main_hwnd": None,
         "ready_event": threading.Event(),
         "logo_hbitmap": None,  # HBITMAP of the bubble icon
+        "notify_hwnd": None,
+        "notify_hbitmap": None,
+        "notify_timer": None,
+        "notification": {},
+        "notify_buttons": {},
+        "unread": False,
     }
 
-    def _load_bubble_png(png_path):
-        """Build a stable white circular pony BMP and load it as HBITMAP."""
-        try:
-            from PIL import Image as _PILImage
-            from PIL import ImageDraw as _PILImageDraw
-            import io as _io
+    def _premultiplied_bgra_to_hbitmap(raw: bytes, width: int, height: int):
+        bmi = _BITMAPINFO()
+        bmi.bmiHeader.biSize = _ct.sizeof(_BITMAPINFOHEADER)
+        bmi.bmiHeader.biWidth = width
+        bmi.bmiHeader.biHeight = -height  # top-down DIB
+        bmi.bmiHeader.biPlanes = 1
+        bmi.bmiHeader.biBitCount = 32
+        bmi.bmiHeader.biCompression = BI_RGB
+        bmi.bmiHeader.biSizeImage = width * height * 4
 
-            source_path = png_path
+        bits = _ct.c_void_p()
+        screen_dc = _user32.GetDC(None)
+        if not screen_dc:
+            return None
+        try:
+            hbitmap = _gdi32.CreateDIBSection(
+                screen_dc, _ct.byref(bmi), DIB_RGB_COLORS, _ct.byref(bits), None, 0
+            )
+        finally:
+            _user32.ReleaseDC(None, screen_dc)
+        if not hbitmap or not bits.value:
+            return None
+
+        _ct.memmove(bits, raw, min(len(raw), width * height * 4))
+        return hbitmap
+
+    def _rgba_to_premultiplied_hbitmap(image):
+        """Create a 32-bit premultiplied-alpha HBITMAP for UpdateLayeredWindow."""
+        rgba = image.convert("RGBA")
+        width, height = rgba.size
+        raw = bytearray(width * height * 4)
+        idx = 0
+        for r, g, b, a in rgba.getdata():
+            raw[idx] = (b * a) // 255
+            raw[idx + 1] = (g * a) // 255
+            raw[idx + 2] = (r * a) // 255
+            raw[idx + 3] = a
+            idx += 4
+        return _premultiplied_bgra_to_hbitmap(bytes(raw), width, height)
+
+    def _load_bubble_png(png_path):
+        """Build a crisp pony bubble bitmap and load it as a premultiplied HBITMAP."""
+        try:
+            try:
+                from PIL import Image as _PILImage
+            except Exception as e:
+                raw_path = STATIC_DIR / "bubble_icon_56.bgra"
+                if raw_path.exists():
+                    raw = raw_path.read_bytes()
+                    hbitmap = _premultiplied_bgra_to_hbitmap(raw, BUBBLE_SIZE, BUBBLE_SIZE)
+                    if hbitmap:
+                        _bubble_state["logo_hbitmap"] = hbitmap
+                        log_msg("WARN", f"Pillow unavailable; using bundled bubble bitmap: {e}")
+                        return True
+                log_msg("ERROR", f"Bubble icon load failed; Pillow unavailable: {e}")
+                return False
+
             fallback_path = str(STATIC_DIR / "bubble_pony_idle.bmp")
-            if not os.path.exists(source_path) and os.path.exists(fallback_path):
-                source_path = fallback_path
+            source_path = png_path if os.path.exists(png_path) else fallback_path
             if not os.path.exists(source_path):
                 return False
 
             src = _PILImage.open(source_path).convert("RGBA")
 
-            # The source PNG has a checkerboard "transparent" background baked
-            # into the pixels. Crop to the visible circular logo, then paste it
-            # onto a real white bubble so GDI can blit it reliably.
             side = min(src.size)
             left = max(0, (src.width - side) // 2)
             top = max(0, (src.height - side) // 2)
             src = src.crop((left, top, left + side, top + side))
 
-            canvas = _PILImage.new("RGBA", (BUBBLE_SIZE, BUBBLE_SIZE), (255, 255, 255, 255))
-            circle_mask = _PILImage.new("L", (BUBBLE_SIZE, BUBBLE_SIZE), 0)
-            draw = _PILImageDraw.Draw(circle_mask)
-            draw.ellipse((0, 0, BUBBLE_SIZE - 1, BUBBLE_SIZE - 1), fill=255)
+            # Work at 3x final size. Remove only the pale background connected
+            # to the image border, keeping internal whites such as the eyes.
+            hi_size = BUBBLE_SIZE * 3
+            logo = src.resize((hi_size, hi_size), _PILImage.LANCZOS).convert("RGBA")
+            rgb = logo.convert("RGB")
+            hsv = logo.convert("HSV")
+            bg_mask = _PILImage.new("L", (hi_size, hi_size), 0)
+            bg_px = bg_mask.load()
+            rgb_px = rgb.load()
+            hsv_px = hsv.load()
+            stack = []
+            for x in range(hi_size):
+                stack.append((x, 0))
+                stack.append((x, hi_size - 1))
+            for y in range(hi_size):
+                stack.append((0, y))
+                stack.append((hi_size - 1, y))
+            while stack:
+                x, y = stack.pop()
+                if x < 0 or y < 0 or x >= hi_size or y >= hi_size or bg_px[x, y]:
+                    continue
+                r, g, b = rgb_px[x, y]
+                _h, sat, val = hsv_px[x, y]
+                if not ((sat < 34 and val > 188) or (r > 232 and g > 232 and b > 232)):
+                    continue
+                bg_px[x, y] = 255
+                stack.extend(((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))
+            logo.putalpha(_PILImage.eval(bg_mask, lambda value: 0 if value else 255))
 
-            logo = src.resize((BUBBLE_SIZE, BUBBLE_SIZE), _PILImage.LANCZOS)
-            canvas.paste(logo, (0, 0), circle_mask)
-            rgb_composite = canvas.convert("RGB")
-
-            # Save as BMP to memory
-            bmp_bytes = _io.BytesIO()
-            rgb_composite.save(bmp_bytes, format="BMP")
-            bmp_data = bmp_bytes.getvalue()
-
-            # Write BMP to temp file for LoadImageW
-            temp_bmp = str(STATIC_DIR / "_bubble_temp.bmp")
-            with open(temp_bmp, "wb") as f:
-                f.write(bmp_data)
-
-            # Load BMP via Win32 LoadImageW
-            IMAGE_BITMAP = 0
-            LR_LOADFROMFILE = 0x0010
-            hbitmap = _user32.LoadImageW(None, temp_bmp, IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE)
+            final_rgba = logo.resize((BUBBLE_SIZE, BUBBLE_SIZE), _PILImage.LANCZOS).convert("RGBA")
+            hbitmap = _rgba_to_premultiplied_hbitmap(final_rgba)
             if hbitmap:
                 _bubble_state["logo_hbitmap"] = hbitmap
                 return True
             return False
-        except Exception:
+        except Exception as e:
+            log_msg("ERROR", f"Bubble icon load failed: {type(e).__name__}: {e}")
             return False
 
     def _reload_bubble_logo():
+        # Once loaded, the HBITMAP is good for the lifetime of the bubble.
+        # Regenerating is expensive (PIL flood-fill) and unnecessary.
+        if _bubble_state.get("logo_hbitmap"):
+            return True
         try:
-            if _bubble_state.get("logo_hbitmap"):
-                _gdi32.DeleteObject(_bubble_state["logo_hbitmap"])
-                _bubble_state["logo_hbitmap"] = None
             bubble_png_path = str(STATIC_DIR / "bubble_icon.png")
             return _load_bubble_png(bubble_png_path)
         except Exception:
             return False
 
+    _BubbleWndProcType = _ct.WINFUNCTYPE(
+        _LRESULT, _wt.HWND, _wt.UINT, _wt.WPARAM, _wt.LPARAM,
+    )
+
+    def _update_bubble_layered(hwnd):
+        """Refresh the floating bubble using per-pixel alpha."""
+        logo_bmp = _bubble_state.get("logo_hbitmap")
+        if not (hwnd and logo_bmp):
+            return False
+
+        rect = _wt.RECT()
+        if not _user32.GetWindowRect(hwnd, _ct.byref(rect)):
+            return False
+
+        screen_dc = _user32.GetDC(None)
+        if not screen_dc:
+            return False
+        mem_dc = _gdi32.CreateCompatibleDC(screen_dc)
+        if not mem_dc:
+            _user32.ReleaseDC(None, screen_dc)
+            return False
+
+        old_bmp = _gdi32.SelectObject(mem_dc, logo_bmp)
+        pt_dst = _wt.POINT(rect.left, rect.top)
+        size = _wt.SIZE(BUBBLE_SIZE, BUBBLE_SIZE)
+        pt_src = _wt.POINT(0, 0)
+        blend = _BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
+        ok = _user32.UpdateLayeredWindow(
+            hwnd, screen_dc, _ct.byref(pt_dst), _ct.byref(size),
+            mem_dc, _ct.byref(pt_src), 0, _ct.byref(blend), ULW_ALPHA
+        )
+
+        _gdi32.SelectObject(mem_dc, old_bmp)
+        _gdi32.DeleteDC(mem_dc)
+        _user32.ReleaseDC(None, screen_dc)
+        return bool(ok)
+
     def _draw_bubble(hwnd):
-        """Paint the circular floating bubble - icon + status text."""
+        """Validate paint requests; the bubble itself is drawn with alpha."""
+        ps = _PAINTSTRUCT()
+        hdc = _user32.BeginPaint(hwnd, _ct.byref(ps))
+        if hdc:
+            _user32.EndPaint(hwnd, _ct.byref(ps))
+        _update_bubble_layered(hwnd)
+
+    def _xy_from_lparam(lparam):
+        x = lparam & 0xFFFF
+        y = (lparam >> 16) & 0xFFFF
+        if x >= 0x8000:
+            x -= 0x10000
+        if y >= 0x8000:
+            y -= 0x10000
+        return x, y
+
+    def _point_in_rect(x, y, rect_tuple):
+        if not rect_tuple:
+            return False
+        left, top, right, bottom = rect_tuple
+        return left <= x <= right and top <= y <= bottom
+
+    def _notify_font(size: int, bold: bool = False):
+        from PIL import ImageFont as _PILImageFont
+        font_names = ["msyhbd.ttc" if bold else "msyh.ttc", "simhei.ttf", "arial.ttf"]
+        for name in font_names:
+            path = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / name
+            if path.exists():
+                return _PILImageFont.truetype(str(path), size=size)
+        return _PILImageFont.load_default()
+
+    def _wrap_pil_text(draw, text: str, font, max_width: int, max_lines: int) -> list[str]:
+        value = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not value:
+            return []
+        lines: list[str] = []
+        current = ""
+        for ch in value:
+            trial = current + ch
+            bbox = draw.textbbox((0, 0), trial, font=font)
+            if bbox[2] - bbox[0] <= max_width or not current:
+                current = trial
+            else:
+                lines.append(current)
+                current = ch
+                if len(lines) >= max_lines:
+                    break
+        if current and len(lines) < max_lines:
+            lines.append(current)
+        if lines and len(lines) == max_lines:
+            original = "".join(lines)
+            if len(original) < len(value):
+                while lines[-1] and draw.textbbox((0, 0), lines[-1] + "...", font=font)[2] > max_width:
+                    lines[-1] = lines[-1][:-1]
+                lines[-1] = lines[-1].rstrip() + "..."
+        return lines
+
+    def _draw_centered_pil(draw, rect_tuple, label: str, font, fill):
+        left, top, right, bottom = rect_tuple
+        bbox = draw.textbbox((0, 0), label, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        x = left + ((right - left) - text_w) // 2 - bbox[0]
+        y = top + ((bottom - top) - text_h) // 2 - bbox[1] - 1
+        draw.text((x, y), label, font=font, fill=fill)
+
+    def _render_notification_bitmap():
+        """Render the notification card to a BMP and load it as HBITMAP."""
+        try:
+            from PIL import Image as _PILImage
+            from PIL import ImageDraw as _PILImageDraw
+
+            notice = dict(_bubble_state.get("notification") or {})
+            sender = str(notice.get("sender") or "Hermes")[:18]
+            title = str(notice.get("title") or "有新消息")[:24]
+            message = str(notice.get("message") or "点我查看详情")
+            ntype = str(notice.get("type") or "completed")
+
+            bg = (255, 0, 255)
+            img = _PILImage.new("RGB", (NOTIFY_W, NOTIFY_H), bg)
+            draw = _PILImageDraw.Draw(img)
+            shadow = (238, 222, 206)
+            card = (255, 252, 247)
+            border = (232, 132, 108) if ntype in {"needs_confirm", "needs_input"} else (229, 166, 102)
+            text = (58, 45, 36)
+            soft = (148, 119, 94)
+            red = (211, 70, 56)
+
+            draw.rounded_rectangle((8, 10, NOTIFY_W - 6, NOTIFY_H - 5), radius=12, fill=shadow)
+            draw.rounded_rectangle((4, 4, NOTIFY_W - 10, NOTIFY_H - 10), radius=12, fill=card, outline=border, width=1)
+
+            title_font = _notify_font(16, True)
+            sender_font = _notify_font(12, False)
+            msg_font = _notify_font(13, False)
+            btn_font = _notify_font(13, True)
+
+            draw.ellipse((16, 14, 40, 38), fill=(255, 234, 172), outline=border, width=1)
+            try:
+                avatar_src = _PILImage.open(STATIC_DIR / "bubble_icon.png").convert("RGBA")
+                side = min(avatar_src.size)
+                avatar_src = avatar_src.crop(((avatar_src.width - side) // 2, (avatar_src.height - side) // 2, (avatar_src.width + side) // 2, (avatar_src.height + side) // 2))
+                avatar = avatar_src.resize((22, 22), _PILImage.LANCZOS)
+                mask = _PILImage.new("L", (22, 22), 0)
+                mask_draw = _PILImageDraw.Draw(mask)
+                mask_draw.ellipse((0, 0, 21, 21), fill=255)
+                img.paste(avatar.convert("RGB"), (17, 15), mask)
+            except Exception:
+                draw.text((24, 16), "H", font=_notify_font(14, True), fill=red)
+            draw.text((48, 12), sender, font=sender_font, fill=soft)
+            draw.text((48, 31), title, font=title_font, fill=text)
+
+            lines = _wrap_pil_text(draw, message, msg_font, NOTIFY_W - 36, 2)
+            y = 58
+            for line in lines:
+                draw.text((18, y), line, font=msg_font, fill=text)
+                y += 21
+
+            button_w = 74
+            button_h = 28
+            gap = 12
+            right = NOTIFY_W - 22
+            primary = (right - button_w, NOTIFY_H - 40, right, NOTIFY_H - 40 + button_h)
+            secondary = (primary[0] - gap - button_w, primary[1], primary[0] - gap, primary[3])
+            close_rect = (NOTIFY_W - 30, 11, NOTIFY_W - 13, 28)
+            _bubble_state["notify_buttons"] = {
+                "primary": primary,
+                "secondary": secondary,
+                "close": close_rect,
+            }
+            draw.rounded_rectangle(secondary, radius=12, fill=(252, 242, 233), outline=(232, 203, 180), width=1)
+            _draw_centered_pil(draw, secondary, "稍后", btn_font, soft)
+            draw.rounded_rectangle(primary, radius=12, fill=red)
+            _draw_centered_pil(draw, primary, "查看", btn_font, (255, 255, 255))
+            _draw_centered_pil(draw, close_rect, "×", _notify_font(15, True), (170, 133, 104))
+
+            temp_bmp = str(STATIC_DIR / "_bubble_notify_temp.bmp")
+            img.save(temp_bmp, format="BMP")
+            hbitmap = _user32.LoadImageW(None, temp_bmp, 0, 0, 0, 0x0010)
+            if hbitmap:
+                if _bubble_state.get("notify_hbitmap"):
+                    _gdi32.DeleteObject(_bubble_state["notify_hbitmap"])
+                _bubble_state["notify_hbitmap"] = hbitmap
+                return True
+        except Exception as e:
+            log_msg("WARN", f"Render bubble notification failed: {e}")
+        return False
+
+    def _draw_notification(hwnd):
         ps = _PAINTSTRUCT()
         hdc = _user32.BeginPaint(hwnd, _ct.byref(ps))
         if not hdc:
             return
-
         rect = _wt.RECT()
         _user32.GetClientRect(hwnd, _ct.byref(rect))
-        w, h = rect.right, rect.bottom
-
-        # Create memory DC for double buffering
         mem_dc = _gdi32.CreateCompatibleDC(hdc)
-        bmp = _gdi32.CreateCompatibleBitmap(hdc, w, h)
+        bmp = _gdi32.CreateCompatibleBitmap(hdc, rect.right, rect.bottom)
         old_bmp = _gdi32.SelectObject(mem_dc, bmp)
-
-        # Fill with transparent color key (magenta)
         magenta_brush = _gdi32.CreateSolidBrush(COLOR_KEY)
         _user32.FillRect(mem_dc, _ct.byref(rect), magenta_brush)
         _gdi32.DeleteObject(magenta_brush)
-
-        cx, cy = w // 2, h // 2
-
-        # Draw icon HBITMAP (if loaded)
-        logo_bmp = _bubble_state.get("logo_hbitmap")
-        if logo_bmp:
-            # BMP is already BUBBLE_SIZE x BUBBLE_SIZE, just copy 1:1
-            logo_dc = _gdi32.CreateCompatibleDC(mem_dc)
-            old_logo = _gdi32.SelectObject(logo_dc, logo_bmp)
-            _gdi32.BitBlt(mem_dc, 0, 0, w, h, logo_dc, 0, 0, SRCCOPY)
-            _gdi32.SelectObject(logo_dc, old_logo)
-            _gdi32.DeleteDC(logo_dc)
-        else:
-            # Fallback: "H" letter
-            _gdi32.SetBkMode(mem_dc, TRANSPARENT)
-            _gdi32.SetTextAlign(mem_dc, 1)
-            font = _gdi32.CreateFontW(-32, 0, 0, 0, 700, False, False, False,
-                                       0x86, 0, 0, 0, 0, "Segoe UI")
-            old_font = _gdi32.SelectObject(mem_dc, font)
-            _gdi32.SetTextColor(mem_dc, RGB_FORMAT(255, 255, 255))
-            _user32.TextOutW(mem_dc, cx, cy - 10, "H", 1)
-            _gdi32.SelectObject(mem_dc, old_font)
-            _gdi32.DeleteObject(font)
-
-        # Draw status text at bottom (on top of icon)
-        text = _bubble_state.get("text", "")
-        if text:
-            _gdi32.SetBkMode(mem_dc, TRANSPARENT)
-            _gdi32.SetTextAlign(mem_dc, 1)
-            font = _gdi32.CreateFontW(-11, 0, 0, 0, 400, False, False, False,
-                                       0x86, 0, 0, 0, 0, "Microsoft YaHei UI")
-            old_font = _gdi32.SelectObject(mem_dc, font)
-            _gdi32.SetTextColor(mem_dc, RGB_FORMAT(255, 255, 240))
-            display_text = text[:8] + ("..." if len(text) > 8 else "")
-            _user32.TextOutW(mem_dc, cx, h - 10, display_text, len(display_text))
-            _gdi32.SelectObject(mem_dc, old_font)
-            _gdi32.DeleteObject(font)
-
-        # Blit to screen
-        _gdi32.BitBlt(hdc, 0, 0, w, h, mem_dc, 0, 0, SRCCOPY)
-
-        # Cleanup
+        notify_bmp = _bubble_state.get("notify_hbitmap")
+        if notify_bmp:
+            src_dc = _gdi32.CreateCompatibleDC(mem_dc)
+            old_src = _gdi32.SelectObject(src_dc, notify_bmp)
+            _gdi32.BitBlt(mem_dc, 0, 0, NOTIFY_W, NOTIFY_H, src_dc, 0, 0, SRCCOPY)
+            _gdi32.SelectObject(src_dc, old_src)
+            _gdi32.DeleteDC(src_dc)
+        _gdi32.BitBlt(hdc, 0, 0, rect.right, rect.bottom, mem_dc, 0, 0, SRCCOPY)
         _gdi32.SelectObject(mem_dc, old_bmp)
         _gdi32.DeleteObject(bmp)
         _gdi32.DeleteDC(mem_dc)
         _user32.EndPaint(hwnd, _ct.byref(ps))
 
+    def _hide_notification(clear_unread: bool = False):
+        timer = _bubble_state.get("notify_timer")
+        if timer:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+            _bubble_state["notify_timer"] = None
+        hwnd = _bubble_state.get("notify_hwnd")
+        if hwnd:
+            _user32.ShowWindow(hwnd, 0)
+        if clear_unread:
+            _bubble_state["unread"] = False
+            if _bubble_state.get("hwnd"):
+                _user32.InvalidateRect(_bubble_state["hwnd"], None, True)
+
+    def _position_notification_window():
+        bwnd = _bubble_state.get("hwnd")
+        screen_w = _user32.GetSystemMetrics(0)
+        screen_h = _user32.GetSystemMetrics(1)
+        bx = screen_w - BUBBLE_SIZE - 40
+        by = screen_h - BUBBLE_SIZE - 60
+        if bwnd:
+            rect = _wt.RECT()
+            if _user32.GetWindowRect(bwnd, _ct.byref(rect)):
+                bx, by = rect.left, rect.top
+        x = bx - NOTIFY_W - 12 if bx + BUBBLE_SIZE + NOTIFY_W + 12 > screen_w else bx + BUBBLE_SIZE + 12
+        y = max(16, min(by - 62, screen_h - NOTIFY_H - 32))
+        return x, y
+
+    def _create_notification_window():
+        if _bubble_state.get("notify_hwnd"):
+            return _bubble_state["notify_hwnd"]
+        try:
+            import random
+            wcname = f"HermesBubbleNotify{random.randint(1000, 9999)}"
+            wndcls = WNDCLASSW()
+            wndcls.lpfnWndProc = _ct.cast(_notify_wndproc_fn, _ct.c_void_p)
+            wndcls.hInstance = _kernel32.GetModuleHandleW(None)
+            wndcls.lpszClassName = wcname
+            wndcls.hbrBackground = _gdi32.GetStockObject(5)
+            wndcls.hCursor = _user32.LoadCursorW(None, 32649)
+            reg_ok = _user32.RegisterClassW(_ct.byref(wndcls))
+            reg_err = _kernel32.GetLastError()
+            if not reg_ok and reg_err != 1410:
+                log_msg("ERROR", f"Failed to register notification class: {reg_err}")
+                return None
+            x, y = _position_notification_window()
+            hwnd = _user32.CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+                wcname, "Hermes Notification", WS_POPUP,
+                x, y, NOTIFY_W, NOTIFY_H,
+                None, None, wndcls.hInstance, None
+            )
+            if not hwnd:
+                log_msg("ERROR", "Could not create notification window")
+                return None
+            _user32.SetLayeredWindowAttributes(hwnd, COLOR_KEY, 255, LWA_ALPHA | LWA_COLORKEY)
+            _bubble_state["notify_hwnd"] = hwnd
+            return hwnd
+        except Exception as e:
+            log_msg("ERROR", f"Notification window create exception: {e}")
+            return None
+
+    def _show_notification(payload: dict):
+        notice = dict(payload or {})
+        session_id = str(notice.get("session_id") or "")
+        if session_id:
+            notice["session_id"] = session_id
+        if _bubble_state.get("hwnd"):
+            _user32.InvalidateRect(_bubble_state["hwnd"], None, True)
+        # Only pop the card when the user is actually in bubble mode.
+        # Don't store anything if bubble is hidden — user sees the response
+        # in the main window, so there's nothing to "remind" later.
+        if not (_bubble_state.get("visible") or BUBBLE_ONLY):
+            return
+        _bubble_state["notification"] = notice
+        _bubble_state["unread"] = True
+        hwnd = _create_notification_window()
+        if not hwnd:
+            return
+        if not _render_notification_bitmap():
+            return
+        x, y = _position_notification_window()
+        _user32.SetWindowPos(hwnd, -1, x, y, NOTIFY_W, NOTIFY_H, 0x0040 | 0x0010)
+        _user32.ShowWindow(hwnd, 5)
+        _user32.InvalidateRect(hwnd, None, True)
+        _user32.UpdateWindow(hwnd)
+
+        timer = _bubble_state.get("notify_timer")
+        if timer:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+        auto_hide = int(notice.get("auto_hide_seconds") or 0)
+        if auto_hide > 0 and not bool(notice.get("persistent")):
+            timer = threading.Timer(auto_hide, lambda: _hide_notification(clear_unread=False))
+            timer.daemon = True
+            timer.start()
+            _bubble_state["notify_timer"] = timer
+
+    def _open_notification_session():
+        notice = dict(_bubble_state.get("notification") or {})
+        sid = str(notice.get("session_id") or "")
+        employee_id = str(notice.get("employee_id") or "")
+        if sid or employee_id:
+            _set_bubble_pending_session(sid, employee_id)
+        _hide_notification(clear_unread=True)
+        _restore_from_bubble()
+
+    def _make_notify_wndproc():
+        @_BubbleWndProcType
+        def notify_wndproc(hwnd, msg, wparam, lparam):
+            try:
+                if msg == WM_PAINT:
+                    _draw_notification(hwnd)
+                    return 0
+                if msg == WM_LBUTTONDOWN:
+                    x, y = _xy_from_lparam(lparam)
+                    buttons = _bubble_state.get("notify_buttons") or {}
+                    if _point_in_rect(x, y, buttons.get("secondary")) or _point_in_rect(x, y, buttons.get("close")):
+                        _hide_notification(clear_unread=False)
+                        return 0
+                    _open_notification_session()
+                    return 0
+                if msg == WM_DESTROY:
+                    if _bubble_state.get("notify_hbitmap"):
+                        _gdi32.DeleteObject(_bubble_state["notify_hbitmap"])
+                        _bubble_state["notify_hbitmap"] = None
+                    _bubble_state["notify_hwnd"] = None
+                    return 0
+                return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+            except Exception:
+                return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+        return notify_wndproc
+
+    _notify_wndproc_fn = _make_notify_wndproc()
+    bubble_notify_callback = _show_notification
 
     # WndProc for bubble window
-    _BubbleWndProcType = _ct.WINFUNCTYPE(
-        _LRESULT, _wt.HWND, _wt.UINT, _wt.WPARAM, _wt.LPARAM,
-    )
-
     def _make_bubble_wndproc():
         """Create a proper WndProc that captures itself for subclassing."""
 
@@ -2995,7 +4140,12 @@ if __name__ == "__main__":
 
     def _restore_from_bubble():
         """Hide bubble and show main window, or launch it if not running."""
+        _hide_notification(clear_unread=True)
         mhwnd = _bubble_state.get("main_hwnd")
+        if not (mhwnd and _user32.IsWindow(mhwnd)):
+            mhwnd = _find_hermes_main_window()
+            if mhwnd:
+                _bubble_state["main_hwnd"] = mhwnd
         if mhwnd and _user32.IsWindow(mhwnd):
             _user32.ShowWindow(mhwnd, 5)   # SW_SHOW - restores window and taskbar icon
             _user32.SetForegroundWindow(mhwnd)
@@ -3004,13 +4154,21 @@ if __name__ == "__main__":
             if bwnd:
                 _user32.ShowWindow(bwnd, 0)  # SW_HIDE
                 _bubble_state["visible"] = False
+        elif SERVE_ONLY or BROWSER_MODE:
+            _open_browser_ui(url)
+            bwnd = _bubble_state.get("hwnd")
+            if bwnd:
+                _user32.ShowWindow(bwnd, 0)
+                _bubble_state["visible"] = False
         elif BUBBLE_ONLY:
             # No main window yet (bubble-only startup): launch the main window
             import subprocess
             _script = os.path.abspath(__file__)
             _cwd = str(HERMES_HOME / "desktop-client")
+            _python = _preferred_desktop_python()
+            log_msg("INFO", f"Bubble restore launching main window with Python: {_python}")
             subprocess.Popen(
-                [sys.executable, _script],
+                [_python, _script],
                 cwd=_cwd,
                 creationflags=0x00000008 if sys.platform == "win32" else 0
             )
@@ -3019,6 +4177,7 @@ if __name__ == "__main__":
             if bwnd:
                 _user32.DestroyWindow(bwnd)
                 _bubble_state["hwnd"] = None
+            os._exit(0)
 
     def _create_floating_bubble():
         """Create the floating bubble widget window and run its message pump."""
@@ -3060,20 +4219,16 @@ if __name__ == "__main__":
 
             if not hwnd:
                 log_msg("ERROR", "Could not create floating bubble")
+                _bubble_state["ready_event"].set()
                 return
 
             _bubble_state["hwnd"] = hwnd
             _bubble_state["ready_event"].set()
 
-            # Make it circular (clip region)
-            rgn = _gdi32.CreateEllipticRgn(0, 0, BUBBLE_SIZE + 1, BUBBLE_SIZE + 1)
-            _user32.SetWindowRgn(hwnd, rgn, True)
-
-            # Set layered window alpha/color key
-            _user32.SetLayeredWindowAttributes(hwnd, COLOR_KEY, 255, LWA_ALPHA | LWA_COLORKEY)
-
             # Load PNG icon
             _reload_bubble_logo()
+            _update_bubble_layered(hwnd)
+            _create_notification_window()
 
             log_msg("INFO", f"Floating bubble created (hwnd={hwnd})")
 
@@ -3099,30 +4254,47 @@ if __name__ == "__main__":
 
         if action == "show" or action == "":
             log_msg("INFO", f"Bubble show: visible={_bubble_state.get('visible')} hwnd={_bubble_state.get('hwnd')}")
+            shown = False
+            if not _bubble_state.get("hwnd"):
+                _bubble_state["ready_event"].wait(timeout=1.0)
             if _bubble_state.get("hwnd"):
                 bwnd = _bubble_state["hwnd"]
-                _reload_bubble_logo()
+                logo_ok = _reload_bubble_logo()
                 screen_w = _user32.GetSystemMetrics(0)
                 screen_h = _user32.GetSystemMetrics(1)
-                # Re-apply round region and layered attributes
-                rgn = _gdi32.CreateEllipticRgn(0, 0, BUBBLE_SIZE + 1, BUBBLE_SIZE + 1)
-                _user32.SetWindowRgn(bwnd, rgn, True)
-                _user32.SetLayeredWindowAttributes(bwnd, COLOR_KEY, 255, LWA_ALPHA | LWA_COLORKEY)
                 _user32.ShowWindow(bwnd, 5)  # SW_SHOW
-                _user32.SetWindowPos(
+                pos_ok = _user32.SetWindowPos(
                     bwnd, -1,  # HWND_TOPMOST
                     screen_w - BUBBLE_SIZE - 40, screen_h - BUBBLE_SIZE - 60,
                     BUBBLE_SIZE, BUBBLE_SIZE,
                     0x0040 | 0x0010  # SWP_SHOWWINDOW | SWP_NOACTIVATE
                 )
-                _user32.InvalidateRect(bwnd, None, True)
-                _user32.UpdateWindow(bwnd)
+                layer_ok = _update_bubble_layered(bwnd)
+                if not (logo_ok and pos_ok and layer_ok):
+                    err = _kernel32.GetLastError()
+                    log_msg("ERROR", f"Bubble show failed: logo={logo_ok} pos={bool(pos_ok)} layer={layer_ok} err={err}")
+                    _user32.ShowWindow(bwnd, 0)
+                    _bubble_state["visible"] = False
+                    return {
+                        "ok": False,
+                        "visible": False,
+                        "error": "bubble_render_failed",
+                        "detail": f"logo={logo_ok} pos={bool(pos_ok)} layer={layer_ok} err={err}",
+                    }
                 _bubble_state["visible"] = True
+                shown = True
+                if _bubble_state.get("unread") and _bubble_state.get("notification"):
+                    _show_notification(_bubble_state.get("notification") or {})
             else:
                 log_msg("WARN", "Bubble hwnd is None, cannot show")
+                return {"ok": False, "visible": False, "error": "bubble_not_ready"}
             # Hide main window (and its taskbar icon) when bubble is shown
-            if _bubble_state.get("main_hwnd"):
-                mhwnd = _bubble_state["main_hwnd"]
+            mhwnd = _bubble_state.get("main_hwnd")
+            if not (mhwnd and _user32.IsWindow(mhwnd)):
+                mhwnd = _find_hermes_main_window()
+                if mhwnd:
+                    _bubble_state["main_hwnd"] = mhwnd
+            if shown and mhwnd and _user32.IsWindow(mhwnd):
                 _user32.ShowWindow(mhwnd, 0)  # SW_HIDE - hides window AND removes taskbar icon
 
         if action == "hide":
@@ -3153,9 +4325,10 @@ if __name__ == "__main__":
         hicon_small = _user32.LoadImageW(None, icon_path, 1, 48, 48, 0x10)
         hicon_big = _user32.LoadImageW(None, icon_path, 1, 256, 256, 0x10)
 
-        if BUBBLE_ONLY:
-            # Bubble-only mode: no main window, just create the floating bubble
-            log_msg("INFO", "Bubble-only mode: creating floating bubble...")
+        if BUBBLE_ONLY or SERVE_ONLY or BROWSER_MODE:
+            # In app-window/browser mode there is no pywebview-owned HWND, but
+            # the floating pony can still live as a native Win32 window.
+            log_msg("INFO", "Bubble-capable mode: creating floating bubble...")
             try:
                 bubble_thread = threading.Thread(target=_create_floating_bubble, daemon=True)
                 bubble_thread.start()
@@ -3163,13 +4336,27 @@ if __name__ == "__main__":
                 log_msg("INFO", f"Bubble init done: hwnd={_bubble_state.get('hwnd')}")
             except Exception as e:
                 log_msg("ERROR", f"Failed to create floating bubble: {e}")
+            if not BUBBLE_ONLY:
+                for _ in range(60):
+                    hwnd = _find_hermes_main_window()
+                    if hwnd:
+                        _bubble_state["main_hwnd"] = hwnd
+                        if hicon_small:
+                            _user32.SendMessageW(hwnd, WM_SETICON, 0, hicon_small)
+                            _user32.SetClassLongW(hwnd, GCL_HICONSM, hicon_small)
+                        if hicon_big:
+                            _user32.SendMessageW(hwnd, WM_SETICON, 1, hicon_big)
+                            _user32.SetClassLongW(hwnd, GCL_HICON, hicon_big)
+                        log_msg("INFO", "App-window hwnd found for bubble restore/hide")
+                        break
+                    _time.sleep(0.5)
             return
 
         main_hwnd_val = None
 
         for i in range(50):
             _time.sleep(0.2)
-            hwnd = _user32.FindWindowW(None, "Hermes Desktop")
+            hwnd = _find_hermes_main_window()
             if not hwnd:
                 continue
 
@@ -3201,6 +4388,8 @@ if __name__ == "__main__":
                 log_msg("ERROR", f"Failed to create floating bubble: {e}")
 
     threading.Thread(target=_win_thread, daemon=True).start()
+    if BUBBLE_ONLY or SERVE_ONLY:
+        _bubble_state["ready_event"].wait(timeout=5.0)
 
     if BUBBLE_ONLY:
         # Bubble-only mode: keep process alive as long as the bubble exists
@@ -3208,6 +4397,22 @@ if __name__ == "__main__":
         while _bubble_state.get("hwnd") and _user32.IsWindow(_bubble_state["hwnd"]):
             _time.sleep(1)
         log_msg("INFO", "Bubble closed, exiting...")
+        os._exit(0)
+    elif SERVE_ONLY:
+        log_msg("INFO", "Serve-only mode active with native bubble support.")
+        try:
+            while True:
+                _time.sleep(1)
+        except KeyboardInterrupt:
+            log_msg("INFO", "Serve-only mode interrupted, exiting...")
+        os._exit(0)
+    elif BROWSER_MODE:
+        _open_browser_ui(url)
+        try:
+            while True:
+                _time.sleep(1)
+        except KeyboardInterrupt:
+            log_msg("INFO", "Browser mode interrupted, exiting...")
         os._exit(0)
     else:
         # Normal mode: open pywebview window

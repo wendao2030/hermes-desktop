@@ -46,6 +46,9 @@ for workflow execution.
   free-tier job, 1080p VRAM ceiling), Discord-compatible ffmpeg stitch.
   Authored by [@purzbeats](https://github.com/purzbeats). Load this whenever
   you're starting from an official template.
+- `free-online-image-apis.md` — curated list of free, no-API-key image
+  generation/stock photo APIs for when local ComfyUI setup isn't available
+  or for quick testing. Includes reliability ratings and verification workflow.
 
 **Scripts (`scripts/`):**
 
@@ -549,7 +552,14 @@ python3 scripts/fetch_logs.py --tail-queue --host https://cloud.comfy.org
 
 ## Pitfalls
 
-1. **API format required** — every script and the `/api/prompt` endpoint expect
+1. **Always verify downloaded image content** — when using any external image
+   API, never trust the filename or URL alone. Always use `vision_analyze` to
+   confirm the image actually contains the requested subject. APIs like
+   picsum.photos return random photos (landscapes, still life, etc.) regardless
+   of seed name, and pollinations.ai often returns HTML error pages. See
+   `references/free-online-image-apis.md` for the verification checklist.
+
+2. **API format required** — every script and the `/api/prompt` endpoint expect
    API-format workflow JSON. The scripts detect editor format (top-level
    `nodes` and `links` arrays) and tell you to re-export via
    "Workflow → Export (API)" (newer UI) or "Save (API Format)" (older UI).

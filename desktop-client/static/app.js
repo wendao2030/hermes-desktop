@@ -209,10 +209,13 @@ const app = createApp({
         const wsBySession = {};
         let wsReconnectTimer = null;
         let logTimer = null;
+        let bubblePendingTimer = null;
+        let thinkingStatusTimer = null;
         let activeWsSession = '';
         let streamRenderTimer = null;
         let scrollTimer = null;
         const DISPLAY_HISTORY_LIMIT = 80;
+        const CLIENT_MESSAGE_CACHE_LIMIT = Math.max(120, DISPLAY_HISTORY_LIMIT * 2);
 
         function renderStreamingNow() {
             if (streamRenderTimer) {
@@ -243,12 +246,29 @@ const app = createApp({
             return escapeHtml(String(content || '')).replace(/\r?\n/g, '<br>');
         }
 
+        function trimClientMessages(list) {
+            const arr = Array.isArray(list) ? list.filter(Boolean) : [];
+            if (arr.length <= CLIENT_MESSAGE_CACHE_LIMIT) return arr;
+            let trimmed = arr.slice(-CLIENT_MESSAGE_CACHE_LIMIT);
+            while (trimmed.length > 1 && (
+                trimmed[0].role === 'tool' ||
+                trimmed[0].role === 'agent-streaming' ||
+                isInternalDisplayMessage(trimmed[0])
+            )) {
+                trimmed.shift();
+            }
+            return trimmed;
+        }
+
         const displayedMessages = computed(() => {
             // Hide tool messages from main chat flow (they're technical details)
             // Show user, agent/assistant, system messages only
             // Attach _originalIdx so we can map back to the raw messages array
-            var msgs = messages.value
-                .map((m, i) => Object.assign({}, m, { _originalIdx: i }))
+            const rawMessages = Array.isArray(messages.value) ? messages.value : [];
+            const startIdx = Math.max(0, rawMessages.length - CLIENT_MESSAGE_CACHE_LIMIT);
+            var msgs = rawMessages
+                .slice(startIdx)
+                .map((m, i) => Object.assign({}, m, { _originalIdx: startIdx + i }))
                 .filter(m =>
                     m.role === 'user' || m.role === 'agent' ||
                     m.role === 'assistant' || m.role === 'agent-streaming' ||
@@ -334,6 +354,7 @@ const app = createApp({
             } else {
                 messages.value.push({ role, content, html: renderMarkdown(content), timestamp: ts });
             }
+            messages.value = trimClientMessages(messages.value);
             // Keep cache in sync
             if (currentSessionId.value) {
                 sessionMessagesCache[currentSessionId.value] = [...messages.value];
@@ -350,6 +371,13 @@ const app = createApp({
                     keepalive: true
                 }).catch(() => {});
             } catch (e) {}
+        }
+
+        function fetchWithTimeout(url, options, timeoutMs) {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), timeoutMs || 5000);
+            return fetch(url, { ...(options || {}), signal: controller.signal })
+                .finally(() => clearTimeout(timer));
         }
 
         function connectWebSocket(sid) {
@@ -583,7 +611,7 @@ const app = createApp({
                         }
                     }
 
-                    // Commit the streamed/final text first.
+                     // Commit the streamed/final text first.
                     // We defer clearing streamingText + isThinking to nextTick
                     // so Vue can render the committed message BEFORE the
                     // agent-streaming pseudo-message (from displayedMessages
@@ -682,22 +710,28 @@ const app = createApp({
 
         async function stopCurrentResponse() {
             if (!currentSessionId.value || !isThinking.value) return;
+            const sid = currentSessionId.value;
             const partialText = streamingText.value.trim();
+            if (partialText) {
+                renderStreamingNow();
+                addMessage('agent', partialText);
+            }
+            clearStreamingState();
+            isThinking.value = false;
+            isStoppingResponse.value = true;
+            scrollToBottom();
+            wsStatus.value = '正在停止...';
             try {
-                await fetch('/api/session/' + currentSessionId.value + '/interrupt', { method: 'POST' });
-                if (partialText) {
-                    renderStreamingNow();
-                    addMessage('agent', partialText);
-                }
-                clearStreamingState();
-                isThinking.value = false;
-                isStoppingResponse.value = true;
-                scrollToBottom();
-                wsStatus.value = '正在停止...';
+                await fetchWithTimeout('/api/session/' + encodeURIComponent(sid) + '/interrupt', { method: 'POST' }, 2500);
             } catch (e) {
                 console.error('Stop error:', e);
-                isStoppingResponse.value = false;
-                addMessage('system', '[ERROR] 停止失败');
+            } finally {
+                setTimeout(function() {
+                    if (currentSessionId.value === sid) {
+                        isStoppingResponse.value = false;
+                        refreshSessionRunningState(sid);
+                    }
+                }, 800);
             }
         }
 
@@ -768,6 +802,24 @@ const app = createApp({
             }
         }
 
+        function startThinkingStatusPolling() {
+            stopThinkingStatusPolling();
+            thinkingStatusTimer = setInterval(function() {
+                const sid = currentSessionId.value;
+                if (!sid || (!isThinking.value && !streamingText.value && !isStoppingResponse.value)) {
+                    return;
+                }
+                refreshSessionRunningState(sid);
+            }, 3000);
+        }
+
+        function stopThinkingStatusPolling() {
+            if (thinkingStatusTimer) {
+                clearInterval(thinkingStatusTimer);
+                thinkingStatusTimer = null;
+            }
+        }
+
         function updateBubbleText(text) {
             fetch('/api/bubble/update', {
                 method: 'POST',
@@ -776,12 +828,87 @@ const app = createApp({
             }).catch(() => {});
         }
 
-        function minimizeToBubble() {
-            fetch('/api/bubble/update', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'show' }),
-            }).catch((e) => console.error('Bubble update error:', e));
+        async function minimizeToBubble() {
+            try {
+                const res = await fetchWithTimeout('/api/bubble/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'show' }),
+                }, 2500);
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || data.ok === false) {
+                    const detail = data.detail ? '\n\n' + data.detail : '';
+                    alert('悬浮窗暂时没有启动成功，主窗口已保留。请重启 Hermes 后再试。' + detail);
+                }
+            } catch (e) {
+                console.error('Bubble update error:', e);
+                alert('悬浮窗暂时没有启动成功，主窗口已保留。请重启 Hermes 后再试。');
+            }
+        }
+
+        async function openSessionFromBubble(sid, employeeId) {
+            if (!sid && !employeeId) return;
+            let emp = employeeId
+                ? employees.value.find(item => item.id === employeeId)
+                : null;
+            if (!emp && sid) {
+                emp = employees.value.find(item => item.session_id === sid || item.id === sid);
+            }
+            if (!emp) {
+                await loadEmployees();
+                emp = employeeId
+                    ? employees.value.find(item => item.id === employeeId)
+                    : null;
+                if (!emp && sid) {
+                    emp = employees.value.find(item => item.session_id === sid || item.id === sid);
+                }
+            }
+            if (emp) {
+                const targetSid = sid || emp.session_id || await ensureEmployeeSession(emp);
+                currentEmployee.value = emp;
+                editingEmployee.value = emp;
+                activeEmployeeId.value = emp.id;
+                isEmployeeChatting.value = true;
+                activeView.value = 'team';
+                if (targetSid && currentSessionId.value !== targetSid) {
+                    await switchSession(targetSid);
+                } else {
+                    await refreshSessionRunningState(targetSid);
+                }
+                loadEmployeeTasks(emp.id);
+            } else if (sid) {
+                isEmployeeChatting.value = false;
+                currentEmployee.value = null;
+                activeView.value = 'chat';
+                if (currentSessionId.value !== sid) {
+                    await switchSession(sid);
+                } else {
+                    await refreshSessionRunningState(sid);
+                }
+            }
+        }
+
+        async function checkBubblePending() {
+            try {
+                const resp = await fetch('/api/bubble/pending', { cache: 'no-store' });
+                if (!resp.ok) return;
+                const data = await resp.json();
+                if (data.session_id || data.employee_id) {
+                    await openSessionFromBubble(data.session_id, data.employee_id);
+                }
+            } catch (e) {}
+        }
+
+        function startBubblePendingPolling() {
+            stopBubblePendingPolling();
+            bubblePendingTimer = setInterval(checkBubblePending, 1000);
+        }
+
+        function stopBubblePendingPolling() {
+            if (bubblePendingTimer) {
+                clearInterval(bubblePendingTimer);
+                bubblePendingTimer = null;
+            }
         }
 
         async function switchToSkills() {
@@ -1925,7 +2052,7 @@ const app = createApp({
             connectWebSocket(sid);
             Promise.allSettled([
                 refreshSessionRunningState(sid),
-                loadSessionHistory(sid, !hadCache)
+                loadSessionHistory(sid, true)
             ]).catch((e) => {
                 console.warn('Switch session load failed:', e);
             });
@@ -1936,7 +2063,7 @@ const app = createApp({
 
         async function refreshSessionRunningState(sid) {
             try {
-                const resp = await fetch('/api/session/' + encodeURIComponent(sid) + '/status');
+                const resp = await fetchWithTimeout('/api/session/' + encodeURIComponent(sid) + '/status', {}, 2500);
                 const data = await resp.json();
                 if (data.ok && sid === currentSessionId.value) {
                     const wasThinking = isThinking.value || !!streamingText.value;
@@ -1961,13 +2088,19 @@ const app = createApp({
 
         function saveCurrentMessages() {
             if (currentSessionId.value) {
-                sessionMessagesCache[currentSessionId.value] = [...messages.value];
+                const trimmed = trimClientMessages(messages.value);
+                sessionMessagesCache[currentSessionId.value] = [...trimmed];
+                if (trimmed.length !== messages.value.length) {
+                    messages.value = [...trimmed];
+                }
             }
         }
 
         function showSessionFromCache(sid) {
             if (sessionMessagesCache[sid]) {
-                messages.value = [...sessionMessagesCache[sid]];
+                const cached = trimClientMessages(sessionMessagesCache[sid]);
+                sessionMessagesCache[sid] = [...cached];
+                messages.value = [...cached];
                 isLoadingSession.value = false;
                 scrollToBottom();
                 return true;
@@ -1983,7 +2116,9 @@ const app = createApp({
             // Check cache first
             if (!force && sessionMessagesCache[sid]) {
                 if (sid === currentSessionId.value) {
-                    messages.value = [...sessionMessagesCache[sid]];
+                    const cached = trimClientMessages(sessionMessagesCache[sid]);
+                    sessionMessagesCache[sid] = [...cached];
+                    messages.value = [...cached];
                     isLoadingSession.value = false;
                     scrollToBottom();
                 }
@@ -1993,7 +2128,7 @@ const app = createApp({
                 isLoadingSession.value = true;
             }
             try {
-                const resp = await fetch('/api/session/' + sid + '/history?limit=' + DISPLAY_HISTORY_LIMIT);
+                const resp = await fetchWithTimeout('/api/session/' + sid + '/history?limit=' + DISPLAY_HISTORY_LIMIT, {}, 4500);
                 if (!resp.ok) throw new Error('Not found');
                 const data = await resp.json();
                 const loadedMessages = (data.history || []).map((m) => {
@@ -2006,8 +2141,8 @@ const app = createApp({
                         html: role === 'agent' ? renderMarkdown(content) : (role === 'user' ? renderUserContent(content) : escapeHtml(content)),
                     };
                 });
-                const cached = sessionMessagesCache[sid] || [];
-                const finalMessages = cached.length > loadedMessages.length ? cached : loadedMessages;
+                const cached = trimClientMessages(sessionMessagesCache[sid] || []);
+                const finalMessages = loadedMessages.length ? loadedMessages : cached;
                 sessionMessagesCache[sid] = [...finalMessages];
 
                 if (sid !== currentSessionId.value) return;
@@ -2036,7 +2171,7 @@ const app = createApp({
                     setTimeout(tryScroll, 150);
                 });
             } catch (e) {
-                if (!sessionMessagesCache[sid]) sessionMessagesCache[sid] = [];
+                sessionMessagesCache[sid] = trimClientMessages(sessionMessagesCache[sid] || []);
                 if (sid === currentSessionId.value) {
                     messages.value = [...sessionMessagesCache[sid]];
                     isLoadingSession.value = false;
@@ -2046,7 +2181,7 @@ const app = createApp({
 
         async function loadSessions() {
             try {
-                const resp = await fetch('/api/sessions');
+                const resp = await fetchWithTimeout('/api/sessions', {}, 4500);
                 sessions.value = await resp.json();
                 const active = sessions.value.find(item => item.session_id === currentSessionId.value);
                 if (active) currentTitle.value = active.title || '新对话';
@@ -2169,6 +2304,8 @@ const app = createApp({
                     if (inputEl.value) inputEl.value.focus();
                 });
                 startLogPolling();
+                startBubblePendingPolling();
+                startThinkingStatusPolling();
             } catch (e) {
                 console.error('Init error:', e);
             } finally {
@@ -2182,6 +2319,8 @@ const app = createApp({
             closeAllSessionSockets();
             if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
             stopLogPolling();
+            stopBubblePendingPolling();
+            stopThinkingStatusPolling();
         });
 
         return {
