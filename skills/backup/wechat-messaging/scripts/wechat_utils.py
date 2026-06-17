@@ -66,7 +66,6 @@ def send_tab(count: int = 1) -> None:
         _press(VK_TAB)
         time.sleep(0.08)
 
-
 def copy_to_clipboard(text):
     """Copy text to clipboard using pyperclip."""
     import pyperclip
@@ -78,9 +77,10 @@ def activate_wechat() -> dict:
     window = find_wechat_window(wake=True, retries=2)
     if not window:
         raise RuntimeError("Real WeChat window was not found")
-    if not restore_and_focus(window["hwnd"]):
-        raise RuntimeError("WeChat window was found but could not be restored")
-    return get_window_info(window["hwnd"])
+    hwnd = window["hwnd"]
+    restore_and_focus(hwnd)
+    time.sleep(0.3)
+    return get_window_info(hwnd)
 
 
 def send_wechat_message(contact_name: str, message: str) -> bool:

@@ -719,7 +719,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                 <div class="skills-toolbar">
                     <div class="skills-tabs">
                         <button class="skills-tab" :class="{ active: skillsTab === 'mine' }" @click="skillsTab = 'mine'; loadInstalledSkills()">我的技能</button>
-                        <button class="skills-tab" :class="{ active: skillsTab === 'market' }" @click="switchToMarket()">技能市场</button>
+                        <button class="skills-tab" :class="{ active: skillsTab === 'market' }" @click="switchToMarket()">技能广场</button>
                     </div>
                     <input v-if="skillsTab === 'market'" class="search-input" v-model="marketQuery" placeholder="搜索技能..." @keydown.enter="searchMarket">
                     <span v-if="skillsTab === 'mine'" style="font-size:12px;color:var(--text2);margin-left:auto;">{{ installedSkills.length }} 个技能</span>
@@ -729,7 +729,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                         <div v-if="installedSkills.length === 0" class="empty-state">
                             <div class="empty-icon">🧰</div>
                             <div class="empty-title">还没有安装任何技能</div>
-                            <div class="empty-hint">前往「技能市场」挑选你需要的技能吧</div>
+                            <div class="empty-hint">前往「技能广场」挑选你需要的技能吧</div>
                         </div>
                         <div v-for="sk in installedSkills" :key="sk.name" class="card" @click="viewSkillDetail(sk.name)">
                             <div class="card-header">
@@ -746,7 +746,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                         </div>
                     </div>
                     <div v-if="skillsTab === 'market'">
-                        <div v-if="marketLoading" style="padding:40px;text-align:center;color:var(--text2);">正在从技能市场加载...</div>
+                        <div v-if="marketLoading" style="padding:40px;text-align:center;color:var(--text2);">正在从技能广场加载...</div>
                         <div v-else-if="marketResults.length === 0 && marketQuery" style="padding:40px;text-align:center;color:var(--text2);">
                             <div style="font-size:32px;margin-bottom:12px;">🔍</div>
                             <div>没有找到「{{ marketQuery }}」相关技能</div>
@@ -1062,6 +1062,6 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
     </template>
 </div>
 
-<script src="/static/app.js?v=49"></script>
+<script src="/static/app.js?v=52"></script>
 </body>
 </html>

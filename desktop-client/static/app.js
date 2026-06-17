@@ -1869,33 +1869,30 @@ const app = createApp({
 
         async function searchMarket() {
             const q = marketQuery.value.trim();
-            if (!q) return;
+            if (!q) { loadFeatured(); return; }
             marketLoading.value = true;
             try {
-                // Try uskill.cn first, fallback to hermes-agent native search
-                try {
-                    const resp = await fetch('https://www.uskill.cn/api/skills?search=' + encodeURIComponent(q) + '&pageSize=30');
-                    if (resp.ok) {
-                        const data = await resp.json();
-                        marketResults.value = (data.skills || []).map(sk => {
-                            const meta = sk.metadata || {};
-                            return {
-                                name: meta.title || sk.name || '',
-                                description: (meta.shortDescZh || meta.description || '').slice(0, 150),
-                                source: 'uskill.cn',
-                                identifier: meta.url || '',
-                                tags: (meta.tags || []).slice(0, 4),
-                                install_cmd: 'skills install ' + (meta.title || ''),
-                            };
-                        });
-                        marketLoading.value = false;
-                        return;
-                    }
-                } catch (e) { /* fallback */ }
-                // Fallback to hermes-agent search
-                const resp = await fetch('/api/skills/search/market?q=' + encodeURIComponent(q) + '&limit=30');
+                const resp = await fetch('/api/skills/console-square');
                 const data = await resp.json();
-                marketResults.value = data.skills || [];
+                const all = data.skills || [];
+                if (q) {
+                    const lower = q.toLowerCase();
+                    marketResults.value = all.filter(function(s) {
+                        return (s.name || '').toLowerCase().indexOf(lower) >= 0
+                            || (s.title || '').toLowerCase().indexOf(lower) >= 0
+                            || (s.description || '').toLowerCase().indexOf(lower) >= 0
+                            || (s.category || '').toLowerCase().indexOf(lower) >= 0;
+                    });
+                } else {
+                    marketResults.value = all.map(function(s) {
+                        return {
+                            name: s.name, description: s.description || '',
+                            source: 'console', identifier: String(s.id),
+                            tags: [s.category || '', s.version || ''],
+                            download_id: s.id,
+                        };
+                    });
+                }
             } catch (e) {
                 console.error('Market search error:', e);
             }
@@ -1903,43 +1900,25 @@ const app = createApp({
         }
 
         async function installSkill(sk, evt) {
-            // sk is the full skill object from marketResults
+            const skillId = sk.download_id || sk.identifier;
             const name = sk.name || '';
-            if (!name) return;
-
-            // Build the right identifier for hermes-agent install
-            // For uskill.cn skills, the identifier is a skills.homes URL, not installable directly
-            // Use the skill name to try installing via hermes-agent
-            const identifier = sk.identifier || name;
-
-            // Show installing state
+            if (!skillId || !name) return;
             const btn = evt ? evt.target : null;
-            if (btn) {
-                btn.textContent = '安装中...';
-                btn.disabled = true;
-            }
+            if (btn) { btn.textContent = '安装中...'; btn.disabled = true; }
 
             try {
-                const resp = await fetch('/api/skills/install', {
+                const resp = await fetch('/api/skills/console-install/' + skillId, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ identifier, name }),
+                    body: JSON.stringify({ name: name }),
                 });
                 const data = await resp.json();
 
                 if (data.ok) {
                     await loadInstalledSkills();
-                    // Refresh the market view to show "已安装"
                     alert('技能「' + name + '」安装成功！');
                 } else {
-                    const errMsg = data.error || '';
-                    if (errMsg.includes('not found') || errMsg.includes('No source')) {
-                        alert('技能「' + name + '」暂不支持一键安装\n\n请通过终端运行：skills install ' + name);
-                    } else if (errMsg.includes('network') || errMsg.includes('timeout')) {
-                        alert('安装失败：网络连接超时，请检查网络后重试');
-                    } else {
-                        alert('技能「' + name + '」安装失败：' + errMsg);
-                    }
+                    alert('安装失败：' + (data.error || '未知错误'));
                 }
             } catch (e) {
                 console.error('Install skill error:', e);

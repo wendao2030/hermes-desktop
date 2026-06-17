@@ -112,6 +112,12 @@ def ensure_dependency(
     if check():
         return True
 
+    if dep in {"node", "browser"} and os.environ.get("HERMES_DISABLE_OPTIONAL_DEP_INSTALL", "").strip().lower() in {"1", "true", "yes", "on"}:
+        if interactive:
+            desc = _DEP_DESCRIPTIONS.get(dep, dep)
+            print(f"  {desc} is not installed. Optional dependency auto-install is disabled for Hermes Desktop.")
+        return False
+
     script, shell = _find_install_script()
     if script is None:
         if interactive:

@@ -1,6 +1,6 @@
 """Cua-driver backend (Cross-platform).
 
-[PATCH-DTYAO] Original upstream: "Cua-driver backend (macOS only)".
+[PATCH-DTYAO] Original upstream: "Cua-driver backend (Cross-platform only)".
 Changed to support Windows/Linux in addition to macOS.
 
 Speaks MCP over stdio to `cua-driver`. The Python `mcp` SDK is async, so we
@@ -94,7 +94,7 @@ def _is_supported_platform() -> bool:
 
 
 def _is_arm_mac() -> bool:
-    return _is_supported_platform() and platform.machine() == "arm64"
+    return sys.platform == "darwin" and platform.machine() == "arm64"
 
 
 def cua_driver_binary_available() -> bool:

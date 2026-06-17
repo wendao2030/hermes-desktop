@@ -1,4 +1,30 @@
 {
+  "agent-browser": {
+    "archived_at": null,
+    "created_at": "2026-06-17T06:16:22.456744+00:00",
+    "created_by": null,
+    "last_patched_at": null,
+    "last_used_at": "2026-06-17T06:16:22.461432+00:00",
+    "last_viewed_at": "2026-06-17T06:16:22.456744+00:00",
+    "patch_count": 0,
+    "pinned": false,
+    "state": "active",
+    "use_count": 1,
+    "view_count": 1
+  },
+  "agentmail": {
+    "archived_at": null,
+    "created_at": "2026-06-17T06:16:23.464192+00:00",
+    "created_by": null,
+    "last_patched_at": null,
+    "last_used_at": "2026-06-17T06:16:34.566397+00:00",
+    "last_viewed_at": "2026-06-17T06:16:34.552357+00:00",
+    "patch_count": 0,
+    "pinned": false,
+    "state": "active",
+    "use_count": 3,
+    "view_count": 3
+  },
   "desktop-automation-platforms": {
     "archived_at": null,
     "created_at": "2026-05-31T05:08:07.015373+00:00",

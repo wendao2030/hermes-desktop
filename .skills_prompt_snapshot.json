@@ -1,6 +1,10 @@
 {
   "version": 1,
   "manifest": {
+    "agentmail\\SKILL.md": [
+      1781676921434884400,
+      6087
+    ],
     "apple\\apple-notes\\SKILL.md": [
       1779724140000000000,
       2169
@@ -487,6 +491,19 @@
     ]
   },
   "skills": [
+    {
+      "skill_name": "agentmail",
+      "category": "agentmail",
+      "frontmatter_name": "agentmail",
+      "description": "API-first email platform designed for AI agents. Create a...",
+      "platforms": [],
+      "conditions": {
+        "fallback_for_toolsets": [],
+        "requires_toolsets": [],
+        "fallback_for_tools": [],
+        "requires_tools": []
+      }
+    },
     {
       "skill_name": "apple-notes",
       "category": "apple",

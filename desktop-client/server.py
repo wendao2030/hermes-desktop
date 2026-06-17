@@ -14,6 +14,8 @@ import time
 import traceback
 import socket
 import re
+import zipfile
+from io import BytesIO
 from urllib.parse import urlparse
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +23,7 @@ from typing import Any, Optional
 
 # --- Path setup: import AIAgent from hermes-agent ---
 HERMES_HOME = Path(__file__).resolve().parent.parent
+SKILLS_DIR = HERMES_HOME / "skills"
 HERMES_AGENT = HERMES_HOME / "hermes-agent"
 HERMES_VENV_SITE = HERMES_HOME / "venv" / "Lib" / "site-packages"
 os.environ["HERMES_HOME"] = str(HERMES_HOME)
@@ -2458,10 +2461,87 @@ async def list_skills():
         log_msg("WARN", f"Skills list failed: {e}")
         return {"skills": [], "count": 0, "error": str(e)}
 
+# ── Console server integration ────────────────────────────────────────
+CONSOLE_BASE_URL = os.environ.get("HERMES_CONSOLE_URL", "https://139.196.176.26")
+_httpx_verify = os.environ.get("HERMES_CONSOLE_VERIFY_SSL", "0") not in ("0", "false", "no")
+
+
+@app.get("/api/skills/console-square")
+async def get_console_square_skills():
+    """Fetch skill list from the Hermes Console server."""
+    try:
+        import httpx
+        resp = httpx.get(f"{CONSOLE_BASE_URL}/api/skills/square", timeout=10, verify=_httpx_verify)
+        if resp.status_code == 200:
+            skills = resp.json()
+            return {"skills": skills, "source": "console"}
+    except Exception as e:
+        log_msg("WARN", f"Console skills fetch failed: {e}")
+    return {"skills": [], "source": "console", "error": "unavailable"}
+
+
+@app.post("/api/skills/console-install/{skill_id}")
+async def install_console_skill(skill_id: int, request: Request):
+    """Download a skill ZIP from the Console server and install it locally."""
+    import shutil, zipfile as _zipfile, tempfile
+    try:
+        body = await request.json()
+        skill_name = body.get("name", str(skill_id))
+    except Exception:
+        skill_name = str(skill_id)
+
+    # 1. Download from console
+    try:
+        import httpx
+        resp = httpx.get(f"{CONSOLE_BASE_URL}/api/skills/{skill_id}/download", timeout=60, verify=_httpx_verify)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=502, detail="Skill download failed")
+        zip_bytes = resp.content
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Download error: {e}")
+
+    # 2. Extract to skills/{skill_name}/ directory
+    skill_dir = SKILLS_DIR / skill_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
+            zf.extractall(str(skill_dir))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Extract error: {e}")
+
+    log_msg("INFO", f"Installed skill from console: {skill_name} (id={skill_id}) to {skill_dir}")
+    return {"ok": True, "name": skill_name, "path": str(skill_dir)}
+
+
 @app.get("/api/skills/featured")
 async def get_featured_skills():
-    """Get featured/popular skills. Tries uskill.cn first (domestic CDN, fast),
-    falls back to built-in Chinese recommendations if network fails."""
+    """Get featured/popular skills from Hermes Console server."""
+    # First try console server
+    try:
+        import httpx
+        log_msg("INFO", f"Fetching skills from console: {CONSOLE_BASE_URL}")
+        resp = httpx.get(f"{CONSOLE_BASE_URL}/api/skills/square", timeout=8, verify=_httpx_verify)
+        log_msg("INFO", f"Console skills response: {resp.status_code}")
+        if resp.status_code == 200:
+            skills = resp.json()
+            log_msg("INFO", f"Console skills count: {len(skills) if isinstance(skills, list) else 'not list'}")
+            if isinstance(skills, list) and skills:
+                result = []
+                for s in skills:
+                    result.append({
+                        "name": s.get("name", ""),
+                        "description": s.get("description", ""),
+                        "source": "console",
+                        "identifier": str(s.get("id", "")),
+                        "tags": [s.get("category", ""), s.get("version", "")],
+                        "install_cmd": "",
+                    })
+                return {"skills": result, "count": len(result), "source": "console"}
+    except Exception as e:
+        log_msg("WARN", f"Console skills fetch failed: {e}")
+    # Fallback: try uskill.cn
     try:
         import httpx
         resp = httpx.get("https://www.uskill.cn/api/skills?pageSize=20", timeout=5)
