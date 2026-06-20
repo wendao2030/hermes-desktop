@@ -28,6 +28,7 @@ Usage:
     )
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -796,6 +797,12 @@ async def vision_analyze_tool(
                 vision_temperature = float(_vtemp)
         except Exception:
             pass
+        _desktop_vision_timeout = os.getenv("HERMES_DESKTOP_VISION_TIMEOUT")
+        if _desktop_vision_timeout:
+            try:
+                vision_timeout = float(_desktop_vision_timeout)
+            except ValueError:
+                pass
         call_kwargs = {
             "task": "vision",
             "messages": messages,
@@ -805,9 +812,19 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
+        async def _call_vision_api():
+            hard_timeout = max(1.0, float(call_kwargs.get("timeout") or vision_timeout))
+            try:
+                return await asyncio.wait_for(async_call_llm(**call_kwargs), timeout=hard_timeout)
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError(
+                    f"Vision analysis timed out after {hard_timeout:.0f}s. "
+                    "Do not call vision_analyze again for the same image in this turn; "
+                    "use existing observations or explain the timeout to the user."
+                ) from exc
         # Try full-size image first; on size-related rejection, downscale and retry.
         try:
-            response = await async_call_llm(**call_kwargs)
+            response = await _call_vision_api()
         except Exception as _api_err:
             if (_is_image_size_error(_api_err)
                     and len(image_data_url) > _RESIZE_TARGET_BYTES):
@@ -820,7 +837,7 @@ async def vision_analyze_tool(
                 image_data_url = _resize_image_for_vision(
                     temp_image_path, mime_type=detected_mime_type)
                 messages[0]["content"][1]["image_url"]["url"] = image_data_url
-                response = await async_call_llm(**call_kwargs)
+                response = await _call_vision_api()
             else:
                 raise
         
@@ -830,7 +847,7 @@ async def vision_analyze_tool(
         # Retry once on empty content (reasoning-only response)
         if not analysis:
             logger.warning("Vision LLM returned empty content, retrying once")
-            response = await async_call_llm(**call_kwargs)
+            response = await _call_vision_api()
             analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis)

@@ -41,13 +41,131 @@ function sanitizeHtml(html) {
     return template.innerHTML;
 }
 
+function replaceCachePaths(text) {
+    // Replace local cache paths with server URLs BEFORE markdown rendering
+    if (!text) return text;
+    // Match full local paths pointing to cache/images/ or cache/videos/
+    return text.replace(/[A-Za-z]:[\\\/][^ \n<>]*?[\\\/]cache[\\\/](?:images|videos)[\\\/][^ \n<>]*?\.(?:png|jpe?g|gif|webp|svg|bmp|ico|mp4|webm|mov|avi)/gi, function(match) {
+        // Normalize to forward slashes
+        var normalized = match.replace(/\\/g, '/');
+        var idx = normalized.indexOf('/cache/');
+        if (idx < 0) return match;
+        var rel = normalized.slice(idx + 7);
+        return '/api/media/cache/' + rel.split('/').map(function(s) { return encodeURIComponent(s); }).join('/');
+    });
+}
+
+const MEDIA_IMAGE_EXT = 'png|jpe?g|gif|webp|svg|bmp|ico';
+const MEDIA_VIDEO_EXT = 'mp4|webm|mov|avi';
+const MEDIA_EXT = MEDIA_IMAGE_EXT + '|' + MEDIA_VIDEO_EXT;
+
+function normalizeCacheMediaUrl(raw) {
+    if (!raw) return '';
+    let value = String(raw).trim();
+    value = value.replace(/^['"]+|['"]+$/g, '');
+    value = value.replace(/[),.;]+$/g, '');
+
+    if (/^\/api\/media\/cache\//i.test(value)) {
+        return value;
+    }
+
+    const normalized = value.replace(/\\/g, '/');
+    const idx = normalized.toLowerCase().indexOf('/cache/');
+    if (idx < 0) return '';
+    const rel = normalized.slice(idx + 7);
+    if (!/^(images|videos)\//i.test(rel)) return '';
+    return '/api/media/cache/' + rel.split('/').map(function(s) { return encodeURIComponent(s); }).join('/');
+}
+
+function getMediaType(url) {
+    if (new RegExp('\\.(' + MEDIA_VIDEO_EXT + ')(?:[?#].*)?$', 'i').test(url || '')) return 'video';
+    return 'image';
+}
+
+function mediaNameFromUrl(url) {
+    try {
+        const clean = String(url || '').split(/[?#]/)[0];
+        const last = clean.split('/').pop() || 'media';
+        return decodeURIComponent(last);
+    } catch (e) {
+        return 'media';
+    }
+}
+
+function mediaRelFromUrl(url) {
+    const marker = '/api/media/cache/';
+    const idx = String(url || '').indexOf(marker);
+    if (idx < 0) return '';
+    return String(url).slice(idx + marker.length).split(/[?#]/)[0];
+}
+
+function extractMediaItems(text) {
+    const input = String(text || '');
+    const found = [];
+    const seen = new Set();
+
+    function add(raw) {
+        const url = normalizeCacheMediaUrl(raw);
+        if (!url || seen.has(url)) return;
+        seen.add(url);
+        found.push({
+            url: url,
+            rel: mediaRelFromUrl(url),
+            type: getMediaType(url),
+            name: mediaNameFromUrl(url)
+        });
+    }
+
+    const markdownMedia = new RegExp('!?\\[[^\\]]*\\]\\(([^\\)]+?\\.(' + MEDIA_EXT + ')(?:[?#][^\\)]*)?)\\)', 'gi');
+    let m;
+    while ((m = markdownMedia.exec(input)) !== null) add(m[1]);
+
+    const htmlMedia = new RegExp("<(?:img|video|source)\\b[^>]*?\\bsrc=[\"']?([^\"'\\s>]+?\\.(" + MEDIA_EXT + ")(?:[?#][^\"'\\s>]*)?)[\"']?[^>]*>", 'gi');
+    while ((m = htmlMedia.exec(input)) !== null) add(m[1]);
+
+    const apiMedia = new RegExp("/api/media/cache/[^\\s\"'<>)]*?\\.(" + MEDIA_EXT + ")(?:[?#][^\\s\"'<>)]*)?", 'gi');
+    while ((m = apiMedia.exec(input)) !== null) add(m[0]);
+
+    const localMedia = new RegExp('[A-Za-z]:[\\\\/][^\\n<>]*?[\\\\/]cache[\\\\/](?:images|videos)[\\\\/][^\\n<>]*?\\.(' + MEDIA_EXT + ')', 'gi');
+    while ((m = localMedia.exec(input)) !== null) add(m[0]);
+
+    return found.slice(0, 4);
+}
+
+function stripMediaFromText(text) {
+    let output = replaceCachePaths(String(text || ''));
+    const markdownMedia = new RegExp('!?\\[[^\\]]*\\]\\([^\\)]*?\\.(' + MEDIA_EXT + ')(?:[?#][^\\)]*)?\\)', 'gi');
+    const htmlMedia = new RegExp("<(?:img|video|source)\\b[^>]*?\\bsrc=[\"']?[^\"'\\s>]+?\\.(" + MEDIA_EXT + ")(?:[?#][^\"'\\s>]*)?[\"']?[^>]*>", 'gi');
+    const apiMedia = new RegExp("/api/media/cache/[^\\s\"'<>)]*?\\.(" + MEDIA_EXT + ")(?:[?#][^\\s\"'<>)]*)?", 'gi');
+    const danglingAlt = /"?\s*alt\s*=\s*"[^"]*"\s*>?/gi;
+    output = output.replace(markdownMedia, '');
+    output = output.replace(htmlMedia, '');
+    output = output.replace(apiMedia, '');
+    output = output.replace(danglingAlt, '');
+    output = output.replace(/\n{3,}/g, '\n\n').trim();
+    return output;
+}
+
 function renderMarkdown(text) {
     if (!text) return '';
+    // Replace local cache paths before markdown parsing
+    var processed = replaceCachePaths(text);
+    var html;
     try {
-        return sanitizeHtml(_md.parse(text));
+        html = sanitizeHtml(_md.parse(processed));
     } catch (e) {
-        return escapeHtml(text);
+        html = escapeHtml(processed);
     }
+    return html;
+}
+
+function renderAgentContent(content) {
+    const media = extractMediaItems(content);
+    const cleanText = media.length ? stripMediaFromText(content) : content;
+    return {
+        html: renderMarkdown(cleanText),
+        media: media
+    };
 }
 
 const app = createApp({
@@ -70,9 +188,17 @@ const app = createApp({
         const showLog = ref(false);
         const serverLogs = ref([]);
         const showSettings = ref(false);
+        const showVersionDialog = ref(false);
+        const versionSnapshots = ref([]);
+        const versionBusy = ref(false);
         const contextMenu = ref({ visible: false, x: 0, y: 0, sessionId: '' });
         const activeView = ref('home');
         const sessionListCollapsed = ref(false);
+        const sidebarCollapsed = ref(false);
+
+        function toggleSidebar() {
+            sidebarCollapsed.value = !sidebarCollapsed.value;
+        }
         const appReady = ref(false);  // true only after onMounted init completes
         const rightClickMenu = ref({ visible: false, x: 0, y: 0, selected: '', full: '' });
 
@@ -276,9 +402,11 @@ const app = createApp({
                 )
                 .filter(m => !isInternalDisplayMessage(m));
             if (streamingText.value && isThinking.value) {
+                const streamingRender = renderAgentContent(streamingText.value);
                 msgs.push({
                     role: 'agent-streaming',
-                    html: streamingHtml.value || escapeHtml(streamingText.value),
+                    html: streamingRender.html || streamingHtml.value || escapeHtml(streamingText.value),
+                    media: streamingRender.media,
                     _originalIdx: -1,
                 });
             }
@@ -352,7 +480,8 @@ const app = createApp({
             } else if (role === 'user') {
                 messages.value.push({ role, content, html: renderUserContent(content), timestamp: ts });
             } else {
-                messages.value.push({ role, content, html: renderMarkdown(content), timestamp: ts });
+                const rendered = renderAgentContent(content);
+                messages.value.push({ role, content, html: rendered.html, media: rendered.media, timestamp: ts });
             }
             messages.value = trimClientMessages(messages.value);
             // Keep cache in sync
@@ -360,6 +489,38 @@ const app = createApp({
                 sessionMessagesCache[currentSessionId.value] = [...messages.value];
             }
             scrollToBottom();
+        }
+
+        function openMediaPreview(item) {
+            if (!item || !item.url) return;
+            window.open(item.url, '_blank');
+        }
+
+        async function openMediaLocation(item) {
+            if (!item || !item.rel) {
+                openMediaPreview(item);
+                return;
+            }
+            try {
+                const resp = await fetch('/api/media/open-cache/' + item.rel, { method: 'POST' });
+                if (!resp.ok) throw new Error('open failed');
+            } catch (e) {
+                openMediaPreview(item);
+            }
+        }
+
+        async function openMediaGroupLocation(items) {
+            const list = Array.isArray(items) ? items.filter(item => item && !item.failed) : [];
+            if (!list.length) return;
+            await openMediaLocation(list[0]);
+        }
+
+        function visibleMediaItems(msg) {
+            return (msg && Array.isArray(msg.media) ? msg.media : []).filter(item => item && !item.failed).slice(0, 4);
+        }
+
+        function markMediaFailed(item) {
+            if (item) item.failed = true;
         }
 
         function logClientEvent(event, detail) {
@@ -378,6 +539,82 @@ const app = createApp({
             const timer = setTimeout(() => controller.abort(), timeoutMs || 5000);
             return fetch(url, { ...(options || {}), signal: controller.signal })
                 .finally(() => clearTimeout(timer));
+        }
+
+        function formatVersionSnapshot(snapshot) {
+            const files = Array.isArray(snapshot && snapshot.files) ? snapshot.files : [];
+            const names = files.map(function(f) {
+                if (f.target === 'state') return '聊天记录';
+                if (f.target === 'memory') return 'MEMORY.md';
+                if (f.target === 'user') return 'USER.md';
+                return f.target || '';
+            }).filter(Boolean).join('、');
+            const created = snapshot && snapshot.created_at ? String(snapshot.created_at).replace('T', ' ').slice(0, 19) : '';
+            return (created || '未知时间') + (names ? ' · ' + names : '');
+        }
+
+        async function loadVersionSnapshots() {
+            versionBusy.value = true;
+            try {
+                const resp = await fetchWithTimeout('/api/versions', { cache: 'no-store' }, 10000);
+                const data = await resp.json();
+                versionSnapshots.value = data.snapshots || [];
+            } catch (e) {
+                alert('版本列表加载失败：' + (e.message || e));
+            } finally {
+                versionBusy.value = false;
+            }
+        }
+
+        async function openVersionDialog() {
+            showSettings.value = false;
+            showVersionDialog.value = true;
+            await loadVersionSnapshots();
+        }
+
+        async function createVersionSnapshot() {
+            versionBusy.value = true;
+            try {
+                const resp = await fetchWithTimeout('/api/versions/snapshot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        label: '手动保存 ' + new Date().toLocaleString(),
+                        reason: 'manual-ui',
+                        targets: ['state', 'memory', 'user'],
+                    }),
+                }, 30000);
+                const data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error((data && data.detail) || '保存失败');
+                await loadVersionSnapshots();
+                alert('已保存版本快照');
+            } catch (e) {
+                alert('保存版本快照失败：' + (e.message || e));
+            } finally {
+                versionBusy.value = false;
+            }
+        }
+
+        async function restoreVersionSnapshot(snapshot) {
+            if (!snapshot || !snapshot.id) return;
+            const label = snapshot.label || snapshot.id;
+            if (!confirm('确定恢复到这个旧版本吗？\n\n' + label + '\n\n恢复前会自动再备份一次当前状态。')) return;
+            versionBusy.value = true;
+            try {
+                const resp = await fetchWithTimeout('/api/versions/' + encodeURIComponent(snapshot.id) + '/restore', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ targets: ['state', 'memory', 'user'] }),
+                }, 30000);
+                const data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error((data && (data.detail || data.error)) || '恢复失败');
+                alert('已恢复旧版本，页面将刷新');
+                window.location.reload();
+            } catch (e) {
+                alert('恢复旧版本失败：' + (e.message || e));
+            } finally {
+                versionBusy.value = false;
+            }
         }
 
         function connectWebSocket(sid) {
@@ -696,7 +933,14 @@ const app = createApp({
                 const fileLines = uploadedFiles.value.map(function(f) {
                     return '- ' + f.filename + ' (' + f.path + ')';
                 }).join('\n');
-                msgText = text + '\n\n[\u4e0a\u4f20\u7684\u6587\u4ef6]\n' + fileLines + '\n\u8bf7\u5728\u9700\u8981\u8bfb\u53d6\u6587\u4ef6\u65f6\u4f7f\u7528\u62ec\u53f7\u4e2d\u7684\u672c\u5730\u8def\u5f84\u3002';
+                msgText = [
+                    text.trim(),
+                    '',
+                    '---',
+                    '\u9644\u4ef6\uff08\u4f9b Hermes \u8bfb\u53d6\uff0c\u4e0d\u5c5e\u4e8e\u7528\u6237\u6b63\u6587\uff09\uff1a',
+                    fileLines,
+                    '\u9700\u8981\u8bfb\u53d6\u9644\u4ef6\u65f6\uff0c\u8bf7\u4f7f\u7528\u62ec\u53f7\u4e2d\u7684\u672c\u5730\u8def\u5f84\u3002'
+                ].join('\n');
             }
 
             isThinking.value = true;
@@ -722,7 +966,11 @@ const app = createApp({
             scrollToBottom();
             wsStatus.value = '正在停止...';
             try {
-                await fetchWithTimeout('/api/session/' + encodeURIComponent(sid) + '/interrupt', { method: 'POST' }, 2500);
+                await fetchWithTimeout('/api/session/' + encodeURIComponent(sid) + '/interrupt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ partial_text: partialText })
+                }, 2500);
             } catch (e) {
                 console.error('Stop error:', e);
             } finally {
@@ -773,6 +1021,41 @@ const app = createApp({
 
         function removeFile(name) {
             uploadedFiles.value = uploadedFiles.value.filter(f => f.filename !== name);
+        }
+
+        async function handlePaste(e) {
+            // Check if clipboard has files (images pasted from clipboard, etc.)
+            var items = e.clipboardData && e.clipboardData.items;
+            if (!items) return;
+
+            var files = [];
+            for (var i = 0; i < items.length; i++) {
+                var item = items[i];
+                if (item.kind === 'file') {
+                    var file = item.getAsFile();
+                    if (file) files.push(file);
+                }
+            }
+            if (!files.length) return; // No files in clipboard, let text paste normally
+
+            e.preventDefault(); // Only block paste for files
+            for (var j = 0; j < files.length; j++) {
+                var f = files[j];
+                var formData = new FormData();
+                formData.append('file', f);
+                try {
+                    var resp = await fetch('/api/upload/' + currentSessionId.value, {
+                        method: 'POST',
+                        body: formData,
+                    });
+                    if (resp.ok) {
+                        uploadedFiles.value.push(await resp.json());
+                    }
+                } catch (err) {
+                    console.error('Paste upload error:', err);
+                    addMessage('system', '[ERROR] 粘贴上传失败: ' + (f.name || '图片'));
+                }
+            }
         }
 
         async function loadLogs() {
@@ -2048,6 +2331,7 @@ const app = createApp({
                     const wasThinking = isThinking.value || !!streamingText.value;
                     isThinking.value = !!data.running;
                     if (!data.running) {
+                        isStoppingResponse.value = false;
                         clearStreamingState();
                         if (wasThinking) {
                             delete sessionMessagesCache[sid];
@@ -2113,11 +2397,13 @@ const app = createApp({
                 const loadedMessages = (data.history || []).map((m) => {
                     const role = m.role === 'assistant' ? 'agent' : m.role;
                     const content = m.content || '';
+                    const rendered = role === 'agent' ? renderAgentContent(content) : null;
                     return {
                         ...m,
                         role,
                         timestamp: m.timestamp,
-                        html: role === 'agent' ? renderMarkdown(content) : (role === 'user' ? renderUserContent(content) : escapeHtml(content)),
+                        html: role === 'agent' ? rendered.html : (role === 'user' ? renderUserContent(content) : escapeHtml(content)),
+                        media: role === 'agent' ? rendered.media : [],
                     };
                 });
                 const cached = trimClientMessages(sessionMessagesCache[sid] || []);
@@ -2321,6 +2607,14 @@ const app = createApp({
             showLog,
             serverLogs,
             showSettings,
+            showVersionDialog,
+            versionSnapshots,
+            versionBusy,
+            formatVersionSnapshot,
+            openVersionDialog,
+            loadVersionSnapshots,
+            createVersionSnapshot,
+            restoreVersionSnapshot,
             contextMenu,
             showContextMenu,
             hideContextMenu,
@@ -2332,6 +2626,8 @@ const app = createApp({
             copyAll,
             activeView,
             sessionListCollapsed,
+            sidebarCollapsed,
+            toggleSidebar,
             toggleSessionList,
             installedSkills,
             skillsTab,
@@ -2381,6 +2677,11 @@ const app = createApp({
             fileInput,
             logBody,
             renderMarkdown,
+            openMediaPreview,
+            openMediaLocation,
+            openMediaGroupLocation,
+            visibleMediaItems,
+            markMediaFailed,
             formatDate,
             formatMessageTime,
             sendMessage,
@@ -2388,6 +2689,7 @@ const app = createApp({
             handleKeydown,
             triggerFileUpload,
             uploadFile,
+            handlePaste,
             removeFile,
             newSession,
             switchSession,

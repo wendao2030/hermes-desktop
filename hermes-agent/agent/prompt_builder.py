@@ -168,8 +168,9 @@ SKILLS_GUIDANCE = (
     "or discovering a non-trivial workflow, save the approach as a "
     "skill with skill_manage so you can reuse it next time.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities."
+    "patch it with skill_manage(action='patch') unless that skill explicitly says "
+    "it is frozen, maintainer-only, or must not be edited during normal use. "
+    "For frozen skills, follow the skill as written and report the maintenance needed."
 )
 
 KANBAN_GUIDANCE = (
@@ -1193,10 +1194,13 @@ def build_skills_system_prompt(
             "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
             "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
             "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            "If a skill has issues, fix it with skill_manage(action='patch'), unless that skill "
+            "explicitly says it is frozen, maintainer-only, or must not be edited during normal use. "
+            "In that case, follow the skill as written and report the maintenance needed.\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "pitfalls you discovered, update it before finishing unless that skill explicitly forbids "
+            "normal-use edits.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"

@@ -1,0 +1,5 @@
+name: volcengine
+version: 1.0.0
+description: "火山引擎即梦(Seedream)图像生成。复用 Ark API Key，支持文生图、图生图、组图。"
+author: hermes-desktop
+kind: backend

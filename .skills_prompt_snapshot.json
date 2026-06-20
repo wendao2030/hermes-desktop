@@ -1,6 +1,10 @@
 {
   "version": 1,
   "manifest": {
+    "agent-browser\\SKILL.md": [
+      1781676937840766400,
+      5548
+    ],
     "agentmail\\SKILL.md": [
       1781676921434884400,
       6087
@@ -44,10 +48,6 @@
     "autonomous-ai-agents\\opencode\\SKILL.md": [
       1779724140000000000,
       7259
-    ],
-    "backup\\wechat-messaging\\SKILL.md": [
-      1781593050918762000,
-      4380
     ],
     "creative\\architecture-diagram\\SKILL.md": [
       1779724140000000000,
@@ -374,12 +374,16 @@
       9573
     ],
     "software-development\\wechat-messaging\\SKILL.md": [
-      1781593050918762000,
-      4380
+      1781948849843181700,
+      12880
     ],
     "software-development\\writing-plans\\SKILL.md": [
       1779724140000000000,
       7229
+    ],
+    "web-tools-guide\\SKILL.md": [
+      1781684808037627200,
+      6255
     ],
     "yuanbao\\SKILL.md": [
       1779724140000000000,
@@ -491,6 +495,19 @@
     ]
   },
   "skills": [
+    {
+      "skill_name": "agent-browser",
+      "category": "agent-browser",
+      "frontmatter_name": "agent-browser",
+      "description": "Headless browser automation CLI optimized for AI agents w...",
+      "platforms": [],
+      "conditions": {
+        "fallback_for_toolsets": [],
+        "requires_toolsets": [],
+        "fallback_for_tools": [],
+        "requires_tools": []
+      }
+    },
     {
       "skill_name": "agentmail",
       "category": "agentmail",
@@ -653,19 +670,6 @@
         "macos",
         "windows"
       ],
-      "conditions": {
-        "fallback_for_toolsets": [],
-        "requires_toolsets": [],
-        "fallback_for_tools": [],
-        "requires_tools": []
-      }
-    },
-    {
-      "skill_name": "wechat-messaging",
-      "category": "backup",
-      "frontmatter_name": "wechat-messaging",
-      "description": "Use verified local Windows scripts to restore WeChat and ...",
-      "platforms": [],
       "conditions": {
         "fallback_for_toolsets": [],
         "requires_toolsets": [],
@@ -2039,7 +2043,7 @@
       "skill_name": "wechat-messaging",
       "category": "software-development",
       "frontmatter_name": "wechat-messaging",
-      "description": "Use verified local Windows scripts to restore WeChat and ...",
+      "description": "微信发消息/监控必须先加载本技能，并运行固定脚本验证结果。",
       "platforms": [],
       "conditions": {
         "fallback_for_toolsets": [],
@@ -2058,6 +2062,19 @@
         "macos",
         "windows"
       ],
+      "conditions": {
+        "fallback_for_toolsets": [],
+        "requires_toolsets": [],
+        "fallback_for_tools": [],
+        "requires_tools": []
+      }
+    },
+    {
+      "skill_name": "web-tools-guide",
+      "category": "web-tools-guide",
+      "frontmatter_name": "web-tools-guide",
+      "description": "MANDATORY before calling web_search, web_fetch, browser, ...",
+      "platforms": [],
       "conditions": {
         "fallback_for_toolsets": [],
         "requires_toolsets": [],

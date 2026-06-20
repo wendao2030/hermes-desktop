@@ -25,6 +25,7 @@ import ssl
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.anthropic_adapter import _is_oauth_token
@@ -125,6 +126,127 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+_PROMPT_SNAPSHOT_SECRET_KEYS = (
+    "api_key",
+    "apikey",
+    "authorization",
+    "access_token",
+    "refresh_token",
+    "secret",
+    "password",
+    "cookie",
+)
+
+
+def _redact_prompt_snapshot_value(value: Any, key_hint: str = "") -> Any:
+    """Return a JSON-safe copy of a request snapshot with obvious secrets removed."""
+    key_l = str(key_hint or "").lower()
+    if any(secret_key in key_l for secret_key in _PROMPT_SNAPSHOT_SECRET_KEYS):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {
+            str(k): _redact_prompt_snapshot_value(v, str(k))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_prompt_snapshot_value(item, key_hint) for item in value]
+    if isinstance(value, tuple):
+        return [_redact_prompt_snapshot_value(item, key_hint) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _tool_schema_name(tool: Any) -> str:
+    if not isinstance(tool, dict):
+        return str(type(tool).__name__)
+    fn = tool.get("function")
+    if isinstance(fn, dict) and fn.get("name"):
+        return str(fn.get("name"))
+    if tool.get("name"):
+        return str(tool.get("name"))
+    return str(tool.get("type") or "unknown")
+
+
+def _write_llm_prompt_snapshot(
+    agent: Any,
+    *,
+    api_kwargs: dict,
+    api_messages: list,
+    messages: list,
+    original_user_message: str,
+    api_call_count: int,
+    approx_tokens: int,
+    approx_request_tokens: int,
+    total_chars: int,
+) -> None:
+    """Persist the exact LLM request shape for local desktop debugging.
+
+    This is intentionally local-only and best-effort.  It lets us inspect what
+    the model actually saw when it refused to call tools or hallucinated an
+    execution result.
+    """
+    enabled = env_var_enabled("HERMES_DUMP_LLM_PROMPT") or (
+        getattr(agent, "platform", None) == "desktop"
+        and not os.environ.get("HERMES_DISABLE_DESKTOP_PROMPT_SNAPSHOT")
+    )
+    if not enabled:
+        return
+
+    try:
+        hermes_home = Path(os.environ.get("HERMES_HOME") or Path.cwd())
+        out_dir = hermes_home / "logs" / "llm_prompt_snapshots"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        sid = str(getattr(agent, "session_id", "") or "no_session")[:16]
+        path = out_dir / f"{ts}_{sid}_call{api_call_count}.json"
+
+        request_messages = api_kwargs.get("messages")
+        if not isinstance(request_messages, list):
+            request_messages = api_kwargs.get("input")
+        if not isinstance(request_messages, list):
+            request_messages = api_messages
+
+        request_tools = api_kwargs.get("tools")
+        if request_tools is None:
+            request_tools = getattr(agent, "tools", None) or []
+
+        snapshot = {
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "session_id": getattr(agent, "session_id", None),
+            "platform": getattr(agent, "platform", None),
+            "model": getattr(agent, "model", None),
+            "provider": getattr(agent, "provider", None),
+            "base_url": getattr(agent, "base_url", None),
+            "api_mode": getattr(agent, "api_mode", None),
+            "api_call_count": api_call_count,
+            "original_user_message": original_user_message,
+            "approx_tokens": approx_tokens,
+            "approx_request_tokens": approx_request_tokens,
+            "request_char_count": total_chars,
+            "conversation_history_message_count": len(messages or []),
+            "wire_message_count": len(request_messages or []),
+            "tool_count": len(request_tools or []),
+            "tool_names": [_tool_schema_name(tool) for tool in (request_tools or [])],
+            "api_kwargs_keys": sorted(str(k) for k in api_kwargs.keys()),
+            "messages": request_messages,
+            "tools": request_tools,
+            "api_kwargs": {
+                k: v
+                for k, v in api_kwargs.items()
+                if k not in {"messages", "input", "tools"}
+            },
+        }
+        safe_snapshot = _redact_prompt_snapshot_value(snapshot)
+        path.write_text(
+            json.dumps(safe_snapshot, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info("LLM prompt snapshot written: %s", path)
+    except Exception as exc:
+        logger.warning("Failed to write LLM prompt snapshot: %s", exc)
 
 
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
@@ -1086,6 +1208,18 @@ def run_conversation(
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+
+                _write_llm_prompt_snapshot(
+                    agent,
+                    api_kwargs=api_kwargs,
+                    api_messages=api_messages,
+                    messages=messages,
+                    original_user_message=original_user_message,
+                    api_call_count=api_call_count,
+                    approx_tokens=approx_tokens,
+                    approx_request_tokens=approx_request_tokens,
+                    total_chars=total_chars,
+                )
 
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook

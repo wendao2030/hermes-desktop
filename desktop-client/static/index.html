@@ -31,7 +31,10 @@
 * { margin:0; padding:0; box-sizing:border-box; }
 html, body { font-family:var(--font); background:var(--bg); color:var(--text); height:100vh; overflow:hidden; }
 #app { display:flex; height:100vh; }
-.sidebar { width:260px; background:linear-gradient(180deg, #fffaf5 0%, #fef5ee 100%); border-right:1px solid rgba(200,180,155,0.35); display:flex; flex-direction:column; flex-shrink:0; overflow:hidden; }
+.sidebar { width:235px; background:linear-gradient(180deg, #fffaf5 0%, #fef5ee 100%); border-right:1px solid rgba(200,180,155,0.35); display:flex; flex-direction:column; flex-shrink:0; overflow:hidden; transition:width .25s ease, min-width .25s ease; }
+.sidebar.collapsed { width:0; min-width:0; border-right:none; }
+.sidebar-toggle { flex-shrink:0; width:16px; display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--text2); opacity:.35; transition:opacity .15s; background:transparent; border:none; padding:0; }
+.sidebar-toggle:hover { opacity:.8; }
 .sidebar-header { padding:20px 16px; border-bottom:1px solid rgba(200,180,155,0.3); background:linear-gradient(135deg, #e74c3c, #c0392b); }
 .sidebar-header h2 { font-size:17px; color:#fff; display:flex; align-items:center; gap:8px; }
 .sidebar-header h2 img { width:40px; height:40px; border-radius:10px; object-fit:cover; }
@@ -51,18 +54,18 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 .session-item.active { background:var(--accent-light); color:#8a2e22; padding-left:11px; }
 .session-item .title { color:var(--text); font-weight:500; }
 .session-item .date { color:var(--text2); font-size:11px; margin-top:3px; }
-.sidebar-footer { padding:14px 16px; border-top:1px solid rgba(200,180,155,0.25); font-size:12px; color:var(--text2); background:rgba(200,180,155,0.06); display:flex; flex-direction:column; gap:8px; margin-top:auto; flex-shrink:0; }
+.sidebar-footer { padding:14px 16px 36px 16px; border-top:1px solid rgba(200,180,155,0.25); font-size:12px; color:var(--text2); background:rgba(200,180,155,0.06); display:flex; flex-direction:column; gap:8px; margin-top:auto; flex-shrink:0; position:relative; }
 .btn-minimize-bubble { width:100%; padding:8px 12px; background:rgba(212,81,58,0.1); color:var(--accent); border:1px solid rgba(212,81,58,0.25); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:all .15s; text-align:center; }
 .btn-minimize-bubble:hover { background:rgba(212,81,58,0.18); transform:translateY(-1px); }
 .sidebar-footer-row { display:flex; gap:8px; align-items:center; }
-.btn-settings { width:28px; height:28px; padding:0; background:transparent; color:var(--text2); border:1px solid var(--border); border-radius:6px; cursor:pointer; font-size:13px; transition:all .15s; display:inline-flex; align-items:center; justify-content:center; line-height:1; flex-shrink:0; }
+.btn-settings { width:28px; height:28px; padding:0; background:transparent; color:var(--text2); border:none; border-radius:6px; cursor:pointer; font-size:13px; transition:all .15s; display:inline-flex; align-items:center; justify-content:center; line-height:1; flex-shrink:0; }
 .btn-settings:hover { background:var(--surface2); }
 .btn-settings.active { background:var(--accent-light); border-color:var(--accent); color:var(--accent); }
 .btn-settings-item { display:block; width:100%; padding:8px 10px; background:none; color:var(--text); border:1px solid transparent; border-radius:6px; cursor:pointer; font-size:13px; text-align:left; transition:all .15s; }
 .btn-settings-item:hover { background:var(--surface2); }
 .btn-settings-item.active { background:var(--accent-light); color:var(--accent); }
 .settings-panel { overflow:hidden; transition:max-height .25s ease, opacity .25s ease, margin .25s ease; max-height:0; opacity:0; margin-top:0; }
-.settings-panel.open { max-height:120px; opacity:1; margin-top:4px; }
+.settings-panel.open { max-height:260px; opacity:1; margin-top:4px; }
 .settings-panel-inner { padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
 .settings-item { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; }
 .settings-item label { display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text); }
@@ -80,6 +83,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 .msg-row.agent { align-self:stretch; justify-content:flex-start; }
 .msg-body { display:flex; flex-direction:column; width:fit-content; max-width:min(80%, 720px); min-width:0; }
 .msg-row.agent .msg-body { align-items:flex-start; }
+.msg-body.has-media { width:min(80%, 720px); }
 .msg-row.user .msg-body { align-items:flex-end; }
 .msg-time { margin-top:4px; font-size:11px; line-height:1.2; color:rgba(110,92,74,0.58); user-select:text; -webkit-user-select:text; }
 .msg-row.user .msg-time { color:rgba(110,92,74,0.55); text-align:right; }
@@ -88,6 +92,20 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 .msg-row.user .message { max-width:100%; min-width:44px; text-align:left; white-space:pre-wrap; }
 .msg-row.user .message p { margin:0; }
 .msg-row.agent .message { border-bottom-left-radius:4px; }
+.media-bundle { width:100%; max-width:min(100%, 720px); margin-top:10px; padding:10px; border:1px solid rgba(200,180,155,0.42); border-radius:8px; background:rgba(255,252,248,0.96); box-shadow:0 1px 3px rgba(74,59,48,0.04); }
+.media-bundle-head { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; color:var(--text2); font-size:12px; }
+.media-bundle-title { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.media-open-folder-btn { flex-shrink:0; height:28px; padding:0 12px; border:1px solid rgba(198,58,47,0.25); border-radius:6px; background:rgba(198,58,47,0.08); color:var(--accent); font-size:12px; font-weight:700; cursor:pointer; }
+.media-open-folder-btn:hover { background:rgba(198,58,47,0.14); }
+.media-gallery { width:100%; display:grid; gap:8px; }
+.media-gallery.count-1 { grid-template-columns:minmax(0, min(420px, 100%)); }
+.media-gallery.count-2 { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+.media-gallery.count-3 { grid-template-columns:repeat(3, minmax(0, 1fr)); }
+.media-gallery.count-4 { grid-template-columns:repeat(4, minmax(0, 1fr)); }
+.media-card { min-width:0; overflow:hidden; border:1px solid rgba(200,180,155,0.3); border-radius:6px; background:#f7f0e8; }
+.media-preview { width:100%; aspect-ratio:1 / 1; display:block; object-fit:cover; background:#f7f0e8; cursor:pointer; }
+.media-gallery.count-1 .media-preview { aspect-ratio:4 / 3; object-fit:contain; max-height:380px; }
+video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
 .message.agent p, .message.agent-streaming p { margin:4px 0; color:var(--text); }
 .message.agent pre, .message.agent-streaming pre { background:rgba(248,240,230,0.9); border:1px solid rgba(200,180,155,0.35); border-radius:8px; padding:12px; overflow-x:auto; font-family:var(--mono); font-size:13px; margin:8px 0; color:#4a382a; user-select:text; -webkit-user-select:text; }
 .message.agent code, .message.agent-streaming code { font-family:var(--mono); font-size:13px; color:#b84a3d; background:rgba(192,57,43,0.05); padding:1px 5px; border-radius:4px; user-select:text; -webkit-user-select:text; }
@@ -334,7 +352,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 <body>
 <div id="app" v-cloak>
     <template v-if="appReady">
-    <div class="sidebar">
+    <div class="sidebar" :class="{ collapsed: sidebarCollapsed }">
         <div class="sidebar-header" @click="switchToHome()" style="cursor:pointer;">
             <h2><img src="/static/hermes_logo.png" alt="Hermes"> Hermes 智能助手</h2>
         </div>
@@ -378,11 +396,13 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             <button class="btn-minimize-bubble" @click="minimizeToBubble">最小化到悬浮窗</button>
             <div class="sidebar-footer-row">
                 <span>模型: {{ config.model }}</span>
-                <button class="btn-settings" :class="{ active: showSettings }" @click="showSettings = !showSettings" title="设置">⚙</button>
             </div>
+            <button class="btn-settings" :class="{ active: showSettings }" @click="showSettings = !showSettings" title="设置" style="position:absolute;bottom:4px;left:8px;">⚙</button>
             <div class="settings-panel" :class="{ open: showSettings }">
                 <div class="settings-panel-inner">
                     <button class="btn-settings-item" @click="showLog = !showLog; showSettings=false;" :class="{ active: showLog }">查看服务日志</button>
+                    <button class="btn-settings-item" @click="createVersionSnapshot">保存版本快照</button>
+                    <button class="btn-settings-item" @click="openVersionDialog">恢复旧版本</button>
                     <div style="display:flex;align-items:center;gap:6px;padding:8px 0;">
                         <span style="font-size:12px;white-space:nowrap;">清除聊天：</span>
                         <select @change="clearChatByRange($event.target.value); $event.target.value='';" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:#fff;color:var(--text);">
@@ -395,6 +415,10 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                 </div>
             </div>
         </div>
+    </div>
+
+    <div class="sidebar-toggle" @click="toggleSidebar" :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'">
+        <svg width="12" height="12" viewBox="0 0 12 12" :style="{transform: sidebarCollapsed ? '' : 'rotate(180deg)'}"><path d="M4 2L8 6L4 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </div>
 
     <div class="main">
@@ -525,8 +549,20 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
             <template v-for="(msg, idx) in displayedMessages" :key="idx">
                 <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
                     <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
-                    <div class="msg-body">
-                        <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                    <div class="msg-body" :class="{ 'has-media': msg.media && msg.media.length }">
+                        <div v-if="msg.html || !msg.media || !msg.media.length" class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                        <div v-if="visibleMediaItems(msg).length" class="media-bundle">
+                            <div class="media-bundle-head">
+                                <span class="media-bundle-title">生成结果（{{ visibleMediaItems(msg).length }}个）</span>
+                                <button class="media-open-folder-btn" type="button" @click="openMediaGroupLocation(msg.media)">打开所在位置</button>
+                            </div>
+                            <div class="media-gallery" :class="'count-' + visibleMediaItems(msg).length">
+                                <div v-for="(item, mi) in visibleMediaItems(msg)" :key="'main-media-'+idx+'-'+mi" class="media-card">
+                                    <img v-if="item.type === 'image'" class="media-preview" :src="item.url" loading="lazy" :alt="item.name || 'generated image'" @click="openMediaPreview(item)" @error="markMediaFailed(item)">
+                                    <video v-else class="media-preview" controls preload="metadata" :src="item.url" @error="markMediaFailed(item)"></video>
+                                </div>
+                            </div>
+                        </div>
                         <div v-if="msg.timestamp" class="msg-time">{{ formatMessageTime(msg.timestamp) }}</div>
                         <!-- Save as task button only on the last agent message -->
                         <div class="msg-actions" v-if="msg.role === 'agent' && !isThinking && idx === lastDisplayedAgentIdx">
@@ -584,6 +620,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                     v-model="inputText"
                     placeholder="输入你的问题... (Enter 发送，Shift+Enter 换行)"
                     @keydown="handleKeydown"
+                    @paste="handlePaste"
                     rows="1"
                     ref="inputEl"
                 ></textarea>
@@ -647,8 +684,20 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                 <template v-for="(msg, idx) in displayedMessages" :key="'emp-'+idx">
                     <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
                         <span class="msg-avatar" style="display:inline-flex;align-items:center;justify-content:center;font-size:18px;background:var(--surface2);border-radius:50%;flex-shrink:0;width:32px;height:32px;">{{ (currentEmployee && currentEmployee.emoji) || '🤖' }}</span>
-                        <div class="msg-body">
-                            <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                        <div class="msg-body" :class="{ 'has-media': msg.media && msg.media.length }">
+                            <div v-if="msg.html || !msg.media || !msg.media.length" class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                            <div v-if="visibleMediaItems(msg).length" class="media-bundle">
+                                <div class="media-bundle-head">
+                                    <span class="media-bundle-title">生成结果（{{ visibleMediaItems(msg).length }}个）</span>
+                                    <button class="media-open-folder-btn" type="button" @click="openMediaGroupLocation(msg.media)">打开所在位置</button>
+                                </div>
+                                <div class="media-gallery" :class="'count-' + visibleMediaItems(msg).length">
+                                    <div v-for="(item, mi) in visibleMediaItems(msg)" :key="'emp-media-'+idx+'-'+mi" class="media-card">
+                                        <img v-if="item.type === 'image'" class="media-preview" :src="item.url" loading="lazy" :alt="item.name || 'generated image'" @click="openMediaPreview(item)" @error="markMediaFailed(item)">
+                                        <video v-else class="media-preview" controls preload="metadata" :src="item.url" @error="markMediaFailed(item)"></video>
+                                    </div>
+                                </div>
+                            </div>
                             <div v-if="msg.timestamp" class="msg-time">{{ formatMessageTime(msg.timestamp) }}</div>
                         </div>
                     </div>
@@ -697,6 +746,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
                         v-model="inputText"
                         :placeholder="'输入消息给 ' + (currentEmployee.name || '') + '...'"
                         @keydown="handleEmpKeydown"
+                        @paste="handlePaste"
                         rows="1"
                         style="background:#fff;border-color:rgba(200,180,155,0.4);"
                     ></textarea>
@@ -1028,6 +1078,37 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
         </div>
     </div>
 
+    <!-- ========== VERSION BACKUP / RESTORE DIALOG ========== -->
+    <div v-if="showVersionDialog" style="position:fixed;inset:0;background:rgba(0,0,0,0.38);z-index:340;display:flex;align-items:center;justify-content:center;" @click.self="showVersionDialog=false">
+        <div style="background:#fff;border-radius:12px;padding:22px;width:560px;max-width:92vw;max-height:78vh;overflow-y:auto;box-shadow:0 12px 36px rgba(0,0,0,0.18);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+                <div>
+                    <div style="font-size:17px;font-weight:700;color:var(--text);">版本备份与恢复</div>
+                    <div style="font-size:12px;color:var(--text2);margin-top:4px;">包含聊天记录、MEMORY.md、USER.md。恢复前会自动再备份一次。</div>
+                </div>
+                <button style="background:none;border:none;font-size:22px;cursor:pointer;color:var(--text2);" @click="showVersionDialog=false">&times;</button>
+            </div>
+            <div style="display:flex;gap:8px;margin-bottom:12px;">
+                <button class="btn-sm primary" @click="createVersionSnapshot" :disabled="versionBusy">保存当前版本</button>
+                <button class="btn-sm ghost" @click="loadVersionSnapshots" :disabled="versionBusy">刷新列表</button>
+            </div>
+            <div v-if="versionBusy" style="padding:18px;text-align:center;color:var(--text2);">正在处理...</div>
+            <div v-else-if="versionSnapshots.length === 0" style="padding:28px;text-align:center;color:var(--text2);border:1px dashed var(--border);border-radius:10px;">还没有版本快照</div>
+            <div v-else style="display:flex;flex-direction:column;gap:10px;">
+                <div v-for="snap in versionSnapshots" :key="snap.id" style="border:1px solid var(--border);border-radius:10px;padding:12px 14px;background:var(--surface);">
+                    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+                        <div style="min-width:0;">
+                            <div style="font-size:14px;font-weight:700;color:var(--text);">{{ snap.label || '未命名快照' }}</div>
+                            <div style="font-size:12px;color:var(--text2);margin-top:4px;">{{ formatVersionSnapshot(snap) }}</div>
+                            <div style="font-size:12px;color:var(--text2);margin-top:4px;word-break:break-all;">{{ snap.id }}</div>
+                        </div>
+                        <button class="btn-sm primary" @click="restoreVersionSnapshot(snap)" :disabled="versionBusy">恢复</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ========== CAPTURE WORKFLOW / EXPERIENCE DIALOG ========== -->
     <div v-if="showWorkflowCaptureDialog" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:330;display:flex;align-items:center;justify-content:center;" @click.self="closeWorkflowCaptureDialog">
         <div style="background:#fff;border-radius:12px;padding:24px;width:460px;max-height:75vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
@@ -1062,6 +1143,6 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
     </template>
 </div>
 
-<script src="/static/app.js?v=52"></script>
+<script src="/static/app.js?v=67"></script>
 </body>
 </html>

@@ -38,7 +38,6 @@ def log(message: str) -> None:
 def _pythonw() -> Path:
     candidates = [
         HERMES_HOME / "runtime" / "python311" / "pythonw.exe",
-        HERMES_HOME / "venv" / "Scripts" / "pythonw.exe",
         HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "pythonw.exe",
         HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe",
     ]

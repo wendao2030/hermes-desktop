@@ -1,0 +1,5 @@
+name: volcengine
+version: 1.0.0
+description: "火山引擎即梦(Seedance)视频生成。复用 Ark API Key，支持文生视频、图生视频。"
+author: hermes-desktop
+kind: backend

@@ -15,6 +15,10 @@ import traceback
 import socket
 import re
 import zipfile
+import shutil
+import sqlite3
+import hashlib
+import subprocess
 from io import BytesIO
 from urllib.parse import urlparse
 from datetime import datetime
@@ -25,8 +29,9 @@ from typing import Any, Optional
 HERMES_HOME = Path(__file__).resolve().parent.parent
 SKILLS_DIR = HERMES_HOME / "skills"
 HERMES_AGENT = HERMES_HOME / "hermes-agent"
-HERMES_VENV_SITE = HERMES_HOME / "venv" / "Lib" / "site-packages"
+HERMES_VENV_SITE = HERMES_HOME / "hermes-agent" / "venv" / "Lib" / "site-packages"
 os.environ["HERMES_HOME"] = str(HERMES_HOME)
+os.environ.setdefault("HERMES_DESKTOP_SERVE_ONLY", "1")
 if HERMES_VENV_SITE.exists():
     sys.path.insert(0, str(HERMES_VENV_SITE))
 sys.path.insert(0, str(HERMES_AGENT))
@@ -79,6 +84,13 @@ from hermes_cli.env_loader import load_hermes_dotenv
 PROJECT_ENV = HERMES_AGENT / ".env"
 load_hermes_dotenv(hermes_home=HERMES_HOME, project_env=PROJECT_ENV)
 normalize_proxy_env_vars()
+
+# Ensure bundled plugins (image_gen, video_gen) are discovered
+try:
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+except Exception:
+    pass
 
 SESSION_SOURCE = "desktop"
 
@@ -408,6 +420,7 @@ def _finalize_agent_turn(session_id: str, session: dict, result: dict, message: 
     """Persist an agent result even if the desktop WebSocket disappeared."""
     full_messages = result.get("messages", []) if isinstance(result, dict) else []
     final_text = result.get("final_response", "") if isinstance(result, dict) else ""
+    skip_persist_response = bool(isinstance(result, dict) and result.get("__desktop_skip_persist_response"))
     if not final_text and full_messages:
         last = full_messages[-1]
         if last.get("role") == "assistant":
@@ -417,6 +430,12 @@ def _finalize_agent_turn(session_id: str, session: dict, result: dict, message: 
     merged_text = _merge_streamed_and_final_text(streamed_text, final_text)
     if merged_text:
         final_text = merged_text
+
+    if skip_persist_response:
+        result["__desktop_final_text"] = final_text
+        result["__desktop_finalized"] = True
+        log_msg("INFO", f"[{session_id[:12]}] Agent response complete without persisting assistant guard, {len(final_text)} chars")
+        return final_text
 
     if full_messages:
         if final_text:
@@ -453,6 +472,39 @@ def _finalize_agent_turn(session_id: str, session: dict, result: dict, message: 
     _msg_count = len(full_messages) if full_messages else 0
     log_msg("INFO", f"[{session_id[:12]}] Turn stats: api_calls={_api_calls}, total_messages={_msg_count}")
     return final_text
+
+def _persist_interrupted_partial_turn(session_id: str, partial_text: str) -> bool:
+    """Persist the assistant text that was already visible when the user pressed Stop."""
+    partial = _strip_think_blocks_text(partial_text or "").strip()
+    if not partial:
+        return False
+    with session_lock:
+        session = sessions.get(session_id)
+        history = list((session or {}).get("history") or [])
+    if not history:
+        history = _load_history_from_db(session_id)
+    if history and history[-1].get("role") == "assistant":
+        existing = _message_text(history[-1].get("content")).strip()
+        if existing == partial:
+            return True
+        if not existing:
+            history[-1] = {**history[-1], "content": partial}
+        else:
+            history.append({"role": "assistant", "content": partial})
+    else:
+        history.append({"role": "assistant", "content": partial})
+    history = _trim_messages_for_persistence(history)
+    with session_lock:
+        session = sessions.get(session_id)
+        if session is not None:
+            session["history"] = history
+    try:
+        _replace_messages_preserving_timestamps(session_id, history)
+        log_msg("INFO", f"[{session_id[:12]}] Persisted interrupted partial response, {len(partial)} chars")
+        return True
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Persist interrupted partial failed: {e}")
+        return False
 
 def _trim_messages_for_persistence(messages: list[dict], limit: int = MAX_PERSISTED_SESSION_MESSAGES) -> list[dict]:
     """Keep desktop sessions bounded so one bad turn cannot freeze the UI."""
@@ -511,6 +563,8 @@ def _safe_result_for_desktop(result: dict, persisted_user_history: list[dict]) -
         return result
     final_text = _final_text_from_result(result)
     safe_messages = list(persisted_user_history or [])
+    if result.get("__desktop_skip_persist_response"):
+        return {**result, "messages": _trim_messages_for_persistence(safe_messages), "final_response": final_text}
     if final_text:
         safe_messages.append({"role": "assistant", "content": final_text})
     return {**result, "messages": _trim_messages_for_persistence(safe_messages), "final_response": final_text}
@@ -765,12 +819,31 @@ background_review_timer = None
 last_user_activity_at = time.time()
 SESSION_LOCK_UI_TIMEOUT = float(os.environ.get("HERMES_SESSION_LOCK_UI_TIMEOUT", "0.3"))
 INTERRUPT_JOIN_TIMEOUT = float(os.environ.get("HERMES_INTERRUPT_JOIN_TIMEOUT", "0.2"))
+AGENT_JOIN_TIMEOUT = float(os.environ.get("HERMES_AGENT_JOIN_TIMEOUT", "45"))
+AGENT_HEARTBEAT_SECONDS = max(float(os.environ.get("HERMES_AGENT_HEARTBEAT_SECONDS", "15")), 5.0)
+AGENT_STUCK_HINT_SECONDS = max(float(os.environ.get("HERMES_AGENT_STUCK_HINT_SECONDS", "600")), 300.0)
 BACKGROUND_REVIEW_IDLE_SECONDS = float(os.environ.get("HERMES_DESKTOP_BACKGROUND_REVIEW_IDLE_SECONDS", "900"))
 BACKGROUND_REVIEW_DISPUTE_COOLDOWN_SECONDS = float(
     os.environ.get("HERMES_DESKTOP_BACKGROUND_REVIEW_DISPUTE_COOLDOWN_SECONDS", "3600")
 )
 session_db = SessionDB(HERMES_HOME / "state.db")
 DESKTOP_STATE_PATH = HERMES_HOME / "desktop-client" / "state.json"
+VERSION_BACKUP_DIR = HERMES_HOME / "backups" / "versions"
+EXECUTION_EVIDENCE_DIR = HERMES_HOME / "desktop-client" / "execution_evidence"
+VERSION_SNAPSHOT_RE = re.compile(r"^[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$")
+VERSION_TARGET_ALIASES = {
+    "state": "state",
+    "chat": "state",
+    "chats": "state",
+    "history": "state",
+    "messages": "state",
+    "state.db": "state",
+    "memory": "memory",
+    "memory.md": "memory",
+    "user": "user",
+    "user.md": "user",
+}
+VERSION_TARGETS = {"state", "memory", "user"}
 
 # --- Auto-shutdown when browser closes ---
 active_connections = 0
@@ -807,7 +880,13 @@ def _mark_user_activity() -> None:
 
 def _desktop_has_running_turn() -> bool:
     with session_lock:
-        return any(bool((s or {}).get("running")) for s in sessions.values())
+        for s in sessions.values():
+            if not s:
+                continue
+            thread = s.get("agent_thread")
+            if bool(s.get("running")) or bool(thread and thread.is_alive()):
+                return True
+        return False
 
 def _looks_like_tool_dispute(message: str) -> bool:
     text = (message or "").lower()
@@ -836,7 +915,58 @@ def _looks_like_tool_dispute(message: str) -> bool:
         "not actually",
         "did not run",
     )
-    return any(term in text for term in dispute_terms)
+    readable_dispute_terms = (
+        "\u6ca1\u6267\u884c",
+        "\u6ca1\u6709\u6267\u884c",
+        "\u6ca1\u8c03\u7528",
+        "\u6ca1\u6709\u8c03\u7528",
+        "\u4ec0\u4e48\u90fd\u6ca1\u505a",
+        "\u5565\u90fd\u6ca1\u505a",
+        "\u4f60\u6ca1\u6709\u64cd\u4f5c",
+        "\u4f60\u6ca1\u64cd\u4f5c",
+        "\u6ca1\u7f6e\u9876",
+        "\u6ca1\u6253\u5f00",
+        "\u6ca1\u521b\u5efa",
+        "\u6ca1\u6709\u521b\u5efa",
+        "\u6ca1\u5220\u9664",
+        "\u6ca1\u6709\u5220\u9664",
+        "\u5e7b\u89c9",
+        "\u5047\u88c5",
+        "\u810f\u6570\u636e",
+        "\u6c99\u7bb1",
+        "\u7a7a\u767d\u754c\u9762",
+        "tool_turns=0",
+        "fake tool",
+        "not actually",
+        "did not run",
+    )
+    return any(term in text for term in dispute_terms) or any(
+        term in text for term in readable_dispute_terms
+    )
+
+def _looks_like_repetition_loop(text: str) -> bool:
+    if not text or len(text) < 500:
+        return False
+    recent = text[-3000:]
+    pieces = [
+        p.strip()
+        for p in re.split(r"[。！？!?；;\n]+", recent)
+        if len(p.strip()) >= 12
+    ]
+    counts: dict[str, int] = {}
+    for piece in pieces:
+        key = piece[:120]
+        counts[key] = counts.get(key, 0) + 1
+        if counts[key] >= 5:
+            return True
+    compact = re.sub(r"\s+", "", recent)
+    if len(compact) < 500:
+        return False
+    for size in (24, 36, 48):
+        tail = compact[-size:]
+        if len(tail) == size and compact.count(tail) >= 6:
+            return True
+    return False
 
 def _schedule_background_review_check(delay: float | None = None) -> None:
     global background_review_timer
@@ -901,6 +1031,17 @@ def _install_desktop_background_review_scheduler(agent: AIAgent, session_id: str
 
     def _queued_background_review(*args, **kwargs):
         now = time.time()
+        snapshot = None
+        if args and isinstance(args[0], list):
+            snapshot = args[0]
+        elif isinstance(kwargs.get("messages_snapshot"), list):
+            snapshot = kwargs.get("messages_snapshot")
+        if _snapshot_has_unreliable_execution_signals(snapshot):
+            log_msg(
+                "WARN",
+                f"[{session_id[:12]}] Skipping desktop background review due to unreliable execution signals",
+            )
+            return None
         with session_lock:
             current = sessions.get(session_id)
             if current and current.get("last_fake_execution_blocked"):
@@ -1165,12 +1306,41 @@ def _requires_real_tool_action(message: str) -> bool:
     text = str(message or "").lower()
     if not text:
         return False
+    force_action_phrases = [
+        "现在执行", "立即执行", "马上执行", "直接执行",
+        "现在运行", "现在打开", "现在点击", "现在输入", "现在发送",
+        "现在给", "帮我点击", "帮我输入", "帮我发送", "帮我打开",
+        "运行脚本", "执行脚本", "打开微信", "打开窗口",
+        "创建文件", "新建文件", "删除文件", "操作微信", "测试微信", "测试脚本",
+        "检查微信", "查看微信", "检查消息", "查看消息", "检查未读", "查看未读",
+        "回复他", "回复她", "回复消息", "双击消息按钮", "点击消息按钮", "监控微信",
+        "run the script", "execute the script", "open wechat", "send message",
+        "create file", "delete file",
+    ]
+    planning_markers = [
+        "先沟通", "沟通方案", "先讨论", "讨论方案", "先梳理", "梳理流程",
+        "我们先", "我们要", "不要急", "不着急", "不要急着", "先记住",
+        "你只要", "每5秒", "如果有", "只回复",
+        "记住这些", "记录下来", "方案", "流程", "规划", "思路", "设计",
+        "你觉得", "建议", "可行", "后续", "以后", "暂时", "先测试",
+        "先确认", "确认后", "需求", "规则", "逻辑",
+        "不要改", "不要写代码", "不要执行", "不用执行", "不需要执行",
+        "plan", "proposal", "design", "workflow", "discuss", "remember",
+        "later", "after that",
+    ]
+    if any(marker in text for marker in planning_markers) and not any(
+        phrase in text for phrase in force_action_phrases
+    ):
+        return False
     action_words = [
         "\u521b\u5efa", "\u65b0\u5efa", "\u5199\u5165", "\u5199\u4e2a", "\u4fdd\u5b58",
         "\u5220\u9664", "\u590d\u5236", "\u79fb\u52a8", "\u91cd\u547d\u540d",
         "\u6253\u5f00", "\u5173\u95ed", "\u70b9\u51fb", "\u8f93\u5165", "\u53d1\u9001",
         "\u7c98\u8d34", "\u4e0b\u8f7d", "\u4e0a\u4f20", "\u8fd0\u884c", "\u6267\u884c",
         "\u64cd\u4f5c", "\u6d4b\u8bd5", "\u8bd5\u8bd5", "\u5c1d\u8bd5", "\u751f\u6210",
+        "\u7f6e\u4e8e", "\u653e\u5230", "\u5b9a\u4f4d",
+        "\u53d1\u4e00\u6761", "\u53d1\u6761", "\u53d1\u7ed9",
+        "查看", "检查", "回复", "双击", "截图", "置顶", "监控", "读取", "确认",
         "create", "write", "save", "delete", "copy", "move", "rename",
         "open", "click", "type", "send", "paste", "download", "upload", "run",
         "execute", "operate", "test", "try", "generate",
@@ -1179,28 +1349,302 @@ def _requires_real_tool_action(message: str) -> bool:
         "\u684c\u9762", "\u6587\u4ef6", "\u6587\u4ef6\u5939", "\u76ee\u5f55",
         "\u5fae\u4fe1", "qq", "\u7a97\u53e3", "\u672c\u5730", "\u7535\u8111",
         "\u597d\u53cb", "\u6d88\u606f", "\u811a\u672c", "\u6280\u80fd",
+        "AI数字人", "ai数字人", "消息按钮", "未读", "未读消息", "红色数字",
+        "聊天人列表", "聊天列表", "会话列表", "微信窗口", "输入框",
         "desktop", "file", "folder", "directory", "wechat", "window", "local",
         "message", "script", "skill",
     ]
     return any(word in text for word in action_words) and any(word in text for word in target_words)
 
-def _result_used_real_tool(result: dict) -> bool:
-    if not isinstance(result, dict):
+def _continuation_requires_real_tool_action(message: str, conversation_history: list[dict] | None) -> bool:
+    """Detect short follow-up commands that inherit a real-world action target."""
+    text = str(message or "").strip().lower()
+    if not text or len(text) > 80:
         return False
-    for msg in result.get("messages") or []:
+    continuation_terms = [
+        "\u7ee7\u7eed", "\u518d\u6765", "\u518d\u6d4b", "\u91cd\u65b0\u6765", "\u91cd\u65b0\u6267\u884c",
+        "\u4ece\u5934", "\u4ece\u96f6", "\u5b8c\u6574\u6267\u884c", "\u6267\u884c\u4e00\u6b21",
+        "\u6d4b\u8bd5\u4e00\u6b21", "\u518d\u8bd5", "\u5f00\u59cb\u6267\u884c",
+        "continue", "try again", "run again", "execute again", "start over",
+    ]
+    if not any(term in text for term in continuation_terms):
+        return False
+    recent_text = "\n".join(
+        str((msg or {}).get("content") or "")
+        for msg in list(conversation_history or [])[-12:]
+        if isinstance(msg, dict)
+    ).lower()
+    target_terms = [
+        "\u5fae\u4fe1", "wechat", "weixin", "ai\u6570\u5b57\u4eba", "\u6d88\u606f\u6309\u94ae",
+        "\u7ea2\u8272\u6570\u5b57", "\u7f6e\u9876", "\u7a97\u53e3", "\u9f20\u6807", "\u70b9\u51fb",
+        "\u53d1\u9001", "\u622a\u56fe", "\u811a\u672c", "\u684c\u9762", "\u6587\u4ef6",
+    ]
+    action_terms = [
+        "\u6253\u5f00", "\u70b9\u51fb", "\u53d1\u9001", "\u7f6e\u9876", "\u79fb\u52a8",
+        "\u622a\u56fe", "\u6267\u884c", "\u8fd0\u884c", "\u64cd\u4f5c", "\u6d4b\u8bd5",
+        "open", "click", "send", "run", "execute", "operate", "test",
+    ]
+    return any(term in recent_text for term in target_terms) and any(
+        term in recent_text for term in action_terms
+    )
+
+def _assistant_claims_unverified_execution(text: str) -> bool:
+    """Return True when a final answer claims desktop/file execution happened or invents runtime facts."""
+    lowered = str(text or "").lower()
+    if not lowered:
+        return False
+    false_environment_claims = (
+        "\u6c99\u7bb1",
+        "\u9694\u79bb\u73af\u5883",
+        "\u9694\u79bb\u7684\u73af\u5883",
+        "\u865a\u62df\u6587\u4ef6\u7cfb\u7edf",
+        "\u6ca1\u6709\u8fde\u63a5\u5230\u4f60\u7684\u771f\u5b9e\u684c\u9762",
+        "terminal \u8fd0\u884c\u7684 python \u811a\u672c\u90fd\u662f\u5728",
+        "execute_code \u548c terminal",
+        "pyautogui \u5b9e\u9645\u4e0a\u4ec0\u4e48\u90fd\u6ca1\u6267\u884c",
+        "\u6240\u6709\u7684 python \u811a\u672c",
+    )
+    if any(term in lowered for term in false_environment_claims):
+        return True
+    denial_terms = [
+        "\u6ca1\u6709\u771f\u6b63\u8c03\u7528", "\u6ca1\u6709\u8c03\u7528", "\u6ca1\u6267\u884c",
+        "\u4e0d\u80fd\u8bf4\u5df2\u7ecf", "not actually", "did not run", "did not execute",
+    ]
+    if any(term in lowered for term in denial_terms):
+        return False
+    direct_claim_terms = [
+        "\u9f20\u6807\u5df2\u79fb\u52a8",
+        "\u5df2\u79fb\u52a8\u5230",
+        "\u5df2\u53cc\u51fb",
+        "\u5df2\u70b9\u51fb",
+        "\u5df2\u70b9\u51fbai\u6570\u5b57\u4eba",
+        "\u5df2\u70b9\u51fb\u8f93\u5165\u6846",
+        "\u622a\u56fe\u4fdd\u5b58\u6210\u529f",
+        "\u622a\u56fe\u5df2\u4fdd\u5b58",
+        "\u811a\u672c\u6267\u884c\u6210\u529f",
+        "\u811a\u672c\u5df2\u6267\u884c",
+        "\u5b8c\u6574\u6267\u884c\u6b65\u9aa4",
+        "\u5168\u90e8\u6210\u529f",
+        "\u89c6\u89c9\u5206\u6790\u663e\u793a",
+        "\u622a\u56fe\u9a8c\u8bc1",
+        "\u53d1\u73b0",
+        "\u6761\u65b0\u6d88\u606f",
+        "\u6d88\u606f\u5df2\u53d1\u9001",
+        "\u5df2\u53d1\u9001\u6210\u529f",
+        "\u804a\u5929\u5386\u53f2\u5df2\u66f4\u65b0",
+        "\u5386\u53f2\u5df2\u66f4\u65b0",
+        "\u7a97\u53e3\u5df2\u7f6e\u9876",
+        "\u5fae\u4fe1\u7a97\u53e3\u5df2",
+        "mouse moved",
+        "message sent",
+        "screenshot saved",
+    ]
+    if any(term in lowered for term in direct_claim_terms):
+        return True
+    target_terms = [
+        "\u5fae\u4fe1", "wechat", "weixin", "ai\u6570\u5b57\u4eba", "\u7a97\u53e3",
+        "\u6d88\u606f", "\u9f20\u6807", "\u622a\u56fe", "\u811a\u672c", "\u684c\u9762",
+        "\u6587\u4ef6", "\u8f93\u5165\u6846", "\u804a\u5929\u8bb0\u5f55",
+    ]
+    claim_terms = [
+        "\u5df2\u7f6e\u9876", "\u5df2\u70b9\u51fb", "\u5df2\u6253\u5f00", "\u5df2\u53d1\u9001",
+        "\u5df2\u6267\u884c", "\u5df2\u79fb\u52a8", "\u5df2\u622a\u56fe", "\u5df2\u6e05\u7406",
+        "\u811a\u672c\u6267\u884c\u6210\u529f", "\u811a\u672c\u5df2\u6267\u884c", "\u5b8c\u6574\u6267\u884c\u6b65\u9aa4", "\u5168\u90e8\u6210\u529f",
+        "\u89c6\u89c9\u5206\u6790\u663e\u793a", "\u622a\u56fe\u9a8c\u8bc1", "\u5168\u90e8\u6210\u529f\u6267\u884c",
+        "\u5df2\u521b\u5efa", "\u5df2\u5220\u9664", "\u6267\u884c\u6210\u529f", "\u53d1\u9001\u6210\u529f",
+        "\u5df2\u53cc\u51fb", "\u5df2\u70b9\u51fb\u8f93\u5165\u6846", "\u622a\u56fe\u4fdd\u5b58\u6210\u529f",
+        "\u5df2\u66f4\u65b0", "\u5386\u53f2\u5df2\u66f4\u65b0", "\u804a\u5929\u5386\u53f2\u5df2\u66f4\u65b0",
+        "\u53d1\u73b0", "\u65b0\u6d88\u606f", "\u9f20\u6807\u5df2\u79fb\u52a8",
+        "\u9a8c\u8bc1\u6210\u529f", "100%\u6210\u529f", "\u7a97\u53e3\u5168\u7a0b\u7f6e\u9876",
+        "\u5b8c\u6574\u6267\u884c", "\u7cbe\u786e\u5750\u6807", "\u7ea2\u8272\u672a\u8bfb\u6570\u5b57",
+        "\u4f60\u5e94\u8be5\u80fd\u770b\u5230", "\u4f60\u73b0\u5728\u5e94\u8be5\u80fd\u770b\u5230",
+        "\u5df2\u6062\u590d", "\u5df2\u9009\u4e2d", "\u5df2\u5207\u6362", "\u5207\u6362\u6210\u529f",
+        "opened", "clicked", "sent", "executed", "verified successfully",
+    ]
+    step_terms = ["\u7b2c\u4e00\u6b65", "\u7b2c\u4e8c\u6b65", "\u7b2c\u4e09\u6b65", "\u7b2c\u56db\u6b65", "\u2705"]
+    has_target = any(term in lowered for term in target_terms)
+    has_claim = any(term in lowered for term in claim_terms)
+    has_step_success = any(term in lowered for term in step_terms) and (
+        "\u6210\u529f" in lowered or "\u5b8c\u6210" in lowered or "\u5df2" in lowered
+    )
+    return has_target and (has_claim or has_step_success)
+
+def _tool_event_is_real_action(event: dict) -> bool:
+    """True for tools that can actually inspect or change the local desktop/files."""
+    if not isinstance(event, dict) or event.get("type") != "tool":
+        return False
+    name = str(event.get("name") or event.get("tool") or event.get("tool_name") or "").lower()
+    text = " ".join(
+        str(event.get(k) or "").lower()
+        for k in ("name", "tool", "tool_name", "status", "event", "text", "message", "input", "command")
+    )
+    real_markers = (
+        "terminal",
+        "shell",
+        "powershell",
+        "python",
+        "execute",
+        "code_execution",
+        "computer_use",
+        "image",
+        "image_gen",
+        "image_generate",
+        "video_gen",
+        "jimeng",
+        "volcengine",
+        "doubao",
+        "api",
+        "download",
+        "vision",
+        "screenshot",
+        "capture",
+        "click",
+        "mouse",
+        "keyboard",
+        "file",
+        "write_file",
+        "read_file",
+        "apply_patch",
+        "locate_message_button",
+        "send_message.py",
+        "verify_wechat_window.py",
+        "wechat_window.py",
+    )
+    passive_markers = (
+        "skill",
+        "memory",
+        "session_search",
+        "search",
+        "read skill",
+        "load skill",
+    )
+    if any(marker in name or marker in text for marker in real_markers):
+        return True
+    if any(marker in name or marker in text for marker in passive_markers):
+        return False
+    return False
+
+
+def _shorten_for_evidence(value: Any, limit: int = 500) -> str:
+    text = str(value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+def _tool_event_evidence(event: dict, session_id: str, run_id: int) -> dict | None:
+    if not _tool_event_is_real_action(event):
+        return None
+    if not isinstance(event, dict):
+        return None
+    return {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "session_id": session_id,
+        "run_id": run_id,
+        "tool": str(event.get("name") or event.get("tool") or event.get("tool_name") or "tool"),
+        "status": str(event.get("status") or event.get("event") or ""),
+        "command": _shorten_for_evidence(event.get("command") or event.get("input") or event.get("message") or event.get("text")),
+    }
+
+def _write_execution_evidence(session_id: str, run_id: int, evidence: dict) -> None:
+    try:
+        sid = _validate_session_id(session_id)
+        EXECUTION_EVIDENCE_DIR.mkdir(parents=True, exist_ok=True)
+        path = EXECUTION_EVIDENCE_DIR / f"{sid}.jsonl"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(evidence, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Failed to write execution evidence: {e}")
+
+def _execution_guard_text(required: bool, tool_seen: bool, evidence_count: int) -> str:
+    if required:
+        return (
+            "本轮任务需要真实操作电脑或本地数据，但没有产生有效的本地执行证据，已拦截并停止。"
+            "我不会把刚才的文字当成微信、文件或桌面操作结果。"
+            "请不要原样重复上一句；下一步应该运行对应技能脚本或本地工具，并根据工具结果继续。"
+        )
+    if tool_seen and evidence_count <= 0:
+        return (
+            "本轮虽然出现了工具相关步骤，但没有产生有效的本地执行证据，已拦截。"
+            "读取技能、记忆或普通搜索不等于执行本地操作。"
+        )
+    return (
+        "本轮没有真实调用本地执行工具，已拦截并停止。"
+        "上面的文字不能当成微信、文件或桌面操作结果。"
+    )
+
+def _snapshot_has_unreliable_execution_signals(messages: list[dict] | None) -> bool:
+    recent = list(messages or [])[-30:]
+    for msg in recent:
         if not isinstance(msg, dict):
             continue
-        if msg.get("role") == "tool" or msg.get("tool_call_id") or msg.get("tool_name"):
+        content = str(msg.get("content") or "")
+        if msg.get("role") == "user" and _looks_like_tool_dispute(content):
             return True
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+        if msg.get("role") == "assistant" and _assistant_claims_unverified_execution(content):
             return True
+    return False
+
+def _result_used_real_tool(result: dict, baseline_message_count: int = 0) -> bool:
+    if not isinstance(result, dict):
+        return False
+    messages = result.get("messages") or []
+    if baseline_message_count > 0:
+        if len(messages) <= baseline_message_count:
+            return False
+        messages = messages[baseline_message_count:]
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").lower()
+        tool_name = str(msg.get("tool_name") or msg.get("name") or "").lower()
+        content = str(msg.get("content") or "").lower()
+        if role == "tool" or msg.get("tool_call_id") or msg.get("tool_name"):
+            if any(
+                marker in tool_name or marker in content
+                for marker in (
+                    "terminal",
+                    "shell",
+                    "powershell",
+                    "python",
+                    "execute",
+                    "code_execution",
+                    "computer_use",
+                    "image",
+                    "image_gen",
+                    "image_generate",
+                    "video_gen",
+                    "jimeng",
+                    "volcengine",
+                    "doubao",
+                    "api",
+                    "download",
+                    "vision",
+                    "screenshot",
+                    "capture",
+                    "click",
+                    "mouse",
+                    "keyboard",
+                    "file",
+                    "write_file",
+                    "read_file",
+                    "apply_patch",
+                    "locate_message_button",
+                    "send_message.py",
+                    "verify_wechat_window.py",
+                    "wechat_window.py",
+                )
+            ):
+                return True
+            continue
     return False
 
 def _fake_execution_guard_text() -> str:
     return (
-        "我刚才没有真正调用任何本地工具，所以不能说已经执行成功。"
-        "这类任务必须实际调用文件/终端/桌面自动化工具并验证结果后，才能告诉你完成。"
-        "请重新发送这条任务，我会按工具结果一步一步执行。"
+        "本轮没有真实调用本地执行工具，已拦截并停止。"
+        "上面的文字不能当成微信、文件或桌面操作结果。"
+        "不要原样重复上一句；如果要继续，请明确要求运行对应技能脚本，"
+        "例如：运行微信技能脚本并把工具结果发给我。"
     )
 
 def _replace_messages_preserving_timestamps(session_id: str, messages: list[dict]) -> None:
@@ -1388,6 +1832,302 @@ def _session_file_path(session_id: str, filename: str) -> Path:
         raise HTTPException(status_code=400, detail="Invalid file path")
     return target
 
+
+def _version_file_paths() -> dict[str, Path]:
+    memories_dir = HERMES_HOME / "memories"
+    return {
+        "state": HERMES_HOME / "state.db",
+        "memory": memories_dir / "MEMORY.md",
+        "user": memories_dir / "USER.md",
+    }
+
+
+def _normalize_version_targets(targets: Any = None) -> list[str]:
+    if targets is None or targets == "":
+        return ["state", "memory", "user"]
+    if isinstance(targets, str):
+        raw_items = [targets]
+    elif isinstance(targets, (list, tuple, set)):
+        raw_items = list(targets)
+    else:
+        raise HTTPException(status_code=400, detail="Invalid restore targets")
+
+    normalized: list[str] = []
+    for item in raw_items:
+        key = str(item or "").strip().lower()
+        target = VERSION_TARGET_ALIASES.get(key)
+        if not target:
+            raise HTTPException(status_code=400, detail=f"Invalid restore target: {item}")
+        if target not in normalized:
+            normalized.append(target)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="No restore targets selected")
+    return normalized
+
+
+def _validate_snapshot_id(snapshot_id: str) -> str:
+    value = str(snapshot_id or "").strip()
+    if not VERSION_SNAPSHOT_RE.match(value):
+        raise HTTPException(status_code=400, detail="Invalid snapshot id")
+    return value
+
+
+def _snapshot_dir(snapshot_id: str) -> Path:
+    sid = _validate_snapshot_id(snapshot_id)
+    root = VERSION_BACKUP_DIR.resolve()
+    target = (root / sid).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid snapshot path")
+    return target
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _backup_sqlite_db(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        target.unlink()
+    src_conn = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=10)
+    dst_conn = sqlite3.connect(str(target), timeout=10)
+    try:
+        with dst_conn:
+            src_conn.backup(dst_conn)
+    finally:
+        dst_conn.close()
+        src_conn.close()
+
+
+def _snapshot_file_entry(target_name: str, source: Path, stored_name: str, snapshot_dir: Path) -> dict:
+    stored = snapshot_dir / stored_name
+    if target_name == "state":
+        _backup_sqlite_db(source, stored)
+    else:
+        stored.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, stored)
+    return {
+        "target": target_name,
+        "source": str(source),
+        "stored": stored_name,
+        "size": stored.stat().st_size,
+        "sha256": _sha256_file(stored),
+    }
+
+
+def _cleanup_old_version_snapshots(keep: int = 80) -> None:
+    try:
+        if keep <= 0 or not VERSION_BACKUP_DIR.exists():
+            return
+        dirs = [p for p in VERSION_BACKUP_DIR.iterdir() if p.is_dir() and VERSION_SNAPSHOT_RE.match(p.name)]
+        dirs.sort(key=lambda p: p.name, reverse=True)
+        for old in dirs[keep:]:
+            shutil.rmtree(old, ignore_errors=True)
+    except Exception as e:
+        log_msg("WARN", f"Failed to cleanup old version snapshots: {e}")
+
+
+def _create_version_snapshot(label: str = "", reason: str = "", targets: Any = None) -> dict:
+    selected_targets = _normalize_version_targets(targets)
+    snapshot_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    snapshot_dir = _snapshot_dir(snapshot_id)
+    snapshot_dir.mkdir(parents=True, exist_ok=False)
+
+    paths = _version_file_paths()
+    stored_names = {
+        "state": "state.db",
+        "memory": "MEMORY.md",
+        "user": "USER.md",
+    }
+    files: list[dict] = []
+    missing: list[dict] = []
+    try:
+        for target_name in selected_targets:
+            source = paths[target_name]
+            if not source.exists():
+                missing.append({"target": target_name, "source": str(source)})
+                continue
+            files.append(_snapshot_file_entry(target_name, source, stored_names[target_name], snapshot_dir))
+
+        manifest = {
+            "id": snapshot_id,
+            "created_at": _now_iso(),
+            "label": str(label or "").strip()[:120],
+            "reason": str(reason or "").strip()[:500],
+            "targets": selected_targets,
+            "files": files,
+            "missing": missing,
+            "hermes_home": str(HERMES_HOME),
+        }
+        (snapshot_dir / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _cleanup_old_version_snapshots()
+        log_msg("INFO", f"Created version snapshot {snapshot_id}: {manifest.get('label') or manifest.get('reason')}")
+        return manifest
+    except Exception:
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
+        raise
+
+
+def _read_version_manifest(snapshot_id: str) -> dict:
+    manifest_path = _snapshot_dir(snapshot_id) / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    try:
+        return json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Invalid snapshot manifest: {e}")
+
+
+def _list_version_snapshots() -> list[dict]:
+    if not VERSION_BACKUP_DIR.exists():
+        return []
+    items = []
+    for folder in VERSION_BACKUP_DIR.iterdir():
+        if not folder.is_dir() or not VERSION_SNAPSHOT_RE.match(folder.name):
+            continue
+        try:
+            manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
+            manifest["path"] = str(folder)
+            items.append(manifest)
+        except Exception as e:
+            items.append({
+                "id": folder.name,
+                "created_at": folder.name[:15],
+                "label": "",
+                "reason": f"Manifest read failed: {e}",
+                "files": [],
+                "missing": [],
+                "path": str(folder),
+                "invalid": True,
+            })
+    items.sort(key=lambda item: str(item.get("created_at") or item.get("id") or ""), reverse=True)
+    return items
+
+
+def _running_session_ids() -> list[str]:
+    running: list[str] = []
+    with session_lock:
+        for sid, session in sessions.items():
+            thread = (session or {}).get("agent_thread")
+            if bool((session or {}).get("running")) or bool(thread and thread.is_alive()):
+                running.append(sid)
+    return running
+
+
+def _clear_session_runtime_cache() -> None:
+    with session_lock:
+        sessions.clear()
+        _desktop_event_runs.clear()
+    with prewarm_lock:
+        prewarming_sessions.clear()
+
+
+def _clear_persisted_system_prompts() -> None:
+    db_path = HERMES_HOME / "state.db"
+    if not db_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=10)
+        try:
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(sessions)").fetchall()]
+            if "system_prompt" in columns:
+                with conn:
+                    conn.execute("UPDATE sessions SET system_prompt=NULL")
+        finally:
+            conn.close()
+    except Exception as e:
+        log_msg("WARN", f"Failed to clear persisted system prompts: {e}")
+
+
+def _replace_state_db_from_snapshot(snapshot_state_db: Path) -> None:
+    global session_db
+    state_path = HERMES_HOME / "state.db"
+    tmp_path = state_path.with_suffix(".db.restore_tmp")
+    old_db = session_db
+    try:
+        if old_db:
+            old_db.close()
+    except Exception as e:
+        log_msg("WARN", f"Failed to close old session DB before restore: {e}")
+
+    shutil.copy2(snapshot_state_db, tmp_path)
+    os.replace(tmp_path, state_path)
+    for suffix in ("-wal", "-shm"):
+        try:
+            sidecar = Path(str(state_path) + suffix)
+            if sidecar.exists():
+                sidecar.unlink()
+        except Exception as e:
+            log_msg("WARN", f"Failed to remove SQLite sidecar {suffix}: {e}")
+    session_db = SessionDB(state_path)
+
+
+def _restore_version_snapshot(snapshot_id: str, targets: Any = None) -> dict:
+    selected_targets = _normalize_version_targets(targets)
+    manifest = _read_version_manifest(snapshot_id)
+    folder = _snapshot_dir(snapshot_id)
+    file_map = {item.get("target"): item for item in manifest.get("files") or []}
+
+    missing_targets = [target for target in selected_targets if target not in file_map]
+    if missing_targets:
+        raise HTTPException(status_code=400, detail=f"Snapshot does not contain: {', '.join(missing_targets)}")
+
+    running_ids = _running_session_ids()
+    if running_ids:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot restore while a task is running. Stop the current task first.",
+        )
+
+    pre_restore = _create_version_snapshot(
+        label="Before restore",
+        reason=f"Automatic backup before restoring {snapshot_id}",
+        targets=["state", "memory", "user"],
+    )
+    restored: list[str] = []
+    paths = _version_file_paths()
+    try:
+        if "state" in selected_targets:
+            state_file = folder / file_map["state"]["stored"]
+            _clear_session_runtime_cache()
+            _replace_state_db_from_snapshot(state_file)
+            restored.append("state")
+
+        for target_name in ("memory", "user"):
+            if target_name not in selected_targets:
+                continue
+            entry = file_map[target_name]
+            source = folder / entry["stored"]
+            target_path = paths[target_name]
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target_path)
+            restored.append(target_name)
+
+        if any(target in selected_targets for target in ("memory", "user")):
+            _clear_persisted_system_prompts()
+            _clear_session_runtime_cache()
+
+        log_msg("INFO", f"Restored version snapshot {snapshot_id}: {', '.join(restored)}")
+        return {
+            "ok": True,
+            "restored": restored,
+            "snapshot": manifest,
+            "pre_restore_snapshot": pre_restore,
+        }
+    except Exception as e:
+        log_msg("ERROR", f"Failed to restore version snapshot {snapshot_id}: {e}")
+        raise
+
+
 def _empty_session():
     return {
         "agent": None,
@@ -1401,15 +2141,25 @@ def _empty_session():
         "run_id": 0,
     }
 
+_desktop_event_runs: dict[int, tuple[str, int]] = {}
+
+
 def _emit_session_event(session_id: str, event: dict):
     """Send an agent event through the current WebSocket bridge, if present."""
+    thread_run = _desktop_event_runs.get(threading.get_ident())
+    event_run_id = None
+    if thread_run and thread_run[0] == session_id:
+        event_run_id = thread_run[1]
     with session_lock:
         session = sessions.get(session_id)
         callbacks = dict((session or {}).get("callbacks") or {})
     emit = callbacks.get("emit")
     if emit:
         try:
-            emit(event)
+            payload = dict(event)
+            if event_run_id is not None:
+                payload["__run_id"] = event_run_id
+            emit(payload)
         except Exception as e:
             log_msg("WARN", f"[{session_id[:12]}] event callback failed: {e}")
 
@@ -1431,13 +2181,21 @@ def _desktop_runtime_system_prompt() -> str:
         "or a message was sent unless the latest tool result confirms the action or the user confirms it.\n"
         "- If a tool call fails, returns an API quota/rate-limit error, or has an uncertain result, "
         "say that plainly and ask for the smallest useful next verification.\n"
-        "- For desktop UI automation, use the available computer_use/cua-driver capability according "
-        "to its actual schema and returned result. Do not invent tool names, parameters, paths, or outcomes.\n"
-        "- When a task involves a skill and needs scripts, create, edit, debug, and run those scripts "
-        "inside that skill's own scripts directory. Do not scatter skill scripts on the Desktop, "
-        "project root, global scripts folders, or tools folders unless the user explicitly asks.\n"
+        "- For desktop UI automation, choose the tool according to the active skill and the actual task: "
+        "use documented skill scripts via terminal when a skill provides an entrypoint; use computer_use/cua-driver "
+        "for general desktop UI work when it is appropriate and its returned result is reliable. Do not invent "
+        "tool names, parameters, paths, or outcomes.\n"
+        "- If a task matches an installed skill or even partially resembles one, load that skill first "
+        "and follow its instructions before choosing tools or writing an answer. Domain-specific workflows "
+        "belong in skills, not in this runtime prompt.\n"
+        "- When a task involves a skill and needs scripts, use the skill's documented entrypoints and "
+        "keep any required script work inside that skill's own scripts directory. Do not scatter skill scripts "
+        "on the Desktop, project root, global scripts folders, or tools folders unless the user explicitly asks.\n"
         "- If the user contradicts a previous claimed success, trust the user's observation and re-check "
-        "from the current state instead of defending the earlier result."
+        "from the current state instead of defending the earlier result.\n"
+        "- General real-execution protocol: when a user asks you to inspect, modify, click, type, send, create, delete, run, screenshot, or operate anything outside pure conversation, "
+        "your first observable step must be a real local tool call. Loading skills, reading memory, plans, and explanations are preparation only, not execution. "
+        "Final answers must be based on the latest tool result, not on imagined steps."
     )
 
 def create_agent(session_id: str) -> AIAgent:
@@ -2228,6 +2986,35 @@ async def set_main_session(request: Request):
     _prewarm_session_agent(session_id, reason="set-main-session")
     return {"ok": True, "session_id": session_id}
 
+
+@app.post("/api/versions/snapshot")
+async def create_version_snapshot(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    manifest = _create_version_snapshot(
+        label=data.get("label") or "Manual snapshot",
+        reason=data.get("reason") or "manual",
+        targets=data.get("targets"),
+    )
+    return {"ok": True, "snapshot": manifest}
+
+
+@app.get("/api/versions")
+async def list_version_snapshots():
+    return {"ok": True, "snapshots": _list_version_snapshots()}
+
+
+@app.post("/api/versions/{snapshot_id}/restore")
+async def restore_version_snapshot(snapshot_id: str, request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return _restore_version_snapshot(snapshot_id, targets=data.get("targets"))
+
+
 @app.get("/api/sessions")
 async def list_sessions():
     result = []
@@ -2303,7 +3090,19 @@ async def get_session_status(session_id: str):
     return {"ok": True, "session_id": session_id, "running": running, "stopping": interrupting}
 
 @app.post("/api/session/{session_id}/interrupt")
-async def interrupt_session(session_id: str):
+async def interrupt_session(session_id: str, request: Request):
+    payload = {}
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    partial_text = str(payload.get("partial_text") or payload.get("partialText") or "")
+    if partial_text.strip():
+        try:
+            _persist_interrupted_partial_turn(session_id, partial_text)
+        except Exception as e:
+            log_msg("WARN", f"[{session_id[:12]}] Interrupted partial save failed: {e}")
+
     acquired = session_lock.acquire(timeout=SESSION_LOCK_UI_TIMEOUT)
     if not acquired:
         log_msg("WARN", f"[{session_id[:12]}] Interrupt lock busy")
@@ -2314,11 +3113,11 @@ async def interrupt_session(session_id: str):
         thread = (session or {}).get("agent_thread")
         running = bool((session or {}).get("running")) or bool(thread and thread.is_alive())
         if session and running:
-            session["interrupt_requested"] = True
+            session["run_id"] = int(session.get("run_id") or 0) + 1
+            session["interrupt_requested"] = False
             session["running"] = False
             session["agent_thread"] = None
             session["agent"] = None
-            session["run_id"] = int(session.get("run_id") or 0) + 1
     finally:
         session_lock.release()
 
@@ -2331,11 +3130,11 @@ async def interrupt_session(session_id: str):
             _emit_session_event(session_id, {"type": "status", "text": "interrupting"})
             return {"ok": True, "status": "interrupted" if running else "idle"}
         except Exception as e:
-            log_msg("WARN", f"[{session_id[:12]}] Interrupt signal failed after local detach: {e}")
-            return {"ok": True, "status": "detached"}
-    log_msg("INFO", f"[{session_id[:12]}] Interrupt detached unsupported agent")
+            log_msg("WARN", f"[{session_id[:12]}] Interrupt signal failed: {e}")
+            return {"ok": True, "status": "interrupted"}
+    log_msg("INFO", f"[{session_id[:12]}] Interrupt requested for unsupported agent")
     _emit_session_event(session_id, {"type": "status", "text": "interrupting"})
-    return {"ok": True, "status": "detached"}
+    return {"ok": True, "status": "interrupted"}
 
 @app.delete("/api/session/{session_id}")
 async def delete_session(session_id: str):
@@ -2401,6 +3200,48 @@ async def download_file(session_id: str, filename: str):
     if not filepath.exists() or not filepath.is_file():
         raise HTTPException(status_code=404, detail="File not found")
     return FileResponse(filepath)
+
+
+# Serve generated images/videos from the cache directory
+MEDIA_CACHE = HERMES_HOME / "cache"
+MEDIA_CACHE.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/api/media/cache/{filepath:path}")
+async def serve_media_cache(filepath: str):
+    """Serve files from cache/images/ and cache/videos/ for inline display."""
+    target = (MEDIA_CACHE / filepath).resolve()
+    try:
+        target.relative_to(MEDIA_CACHE.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid media path")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Media not found")
+    return FileResponse(target)
+
+
+@app.post("/api/media/open-cache/{filepath:path}")
+async def open_media_cache_location(filepath: str):
+    """Open the generated media file in the system file manager."""
+    target = (MEDIA_CACHE / filepath).resolve()
+    try:
+        target.relative_to(MEDIA_CACHE.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid media path")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Media not found")
+
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.Popen(["explorer.exe", f"/select,{target}"])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target.parent)])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to open media location: {exc}")
+    return {"ok": True, "path": str(target)}
+
 
 @app.get("/api/skills")
 async def list_skills():
@@ -2910,7 +3751,12 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
         "chunks": [],
         "guard_required": False,
         "tool_seen": False,
+        "real_action_seen": False,
+        "execution_evidence": [],
         "buffered_events": [],
+        "last_progress_at": time.monotonic(),
+        "turn_started_at": time.monotonic(),
+        "last_activity_label": "starting",
     }
     client_connected = True
 
@@ -2925,18 +3771,79 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             client_connected = False
             return False
 
+    def drain_stale_events() -> int:
+        drained = 0
+        while True:
+            try:
+                msg_queue.get_nowait()
+                drained += 1
+            except asyncio.QueueEmpty:
+                return drained
+
     def emit_event(event: dict):
         """Called from agent thread; schedule push to WS."""
         try:
+            event_run_id = event.get("__run_id")
+            if event_run_id is not None:
+                with session_lock:
+                    current_run_id = int((sessions.get(session_id) or {}).get("run_id") or 0)
+                if int(event_run_id) != current_run_id:
+                    log_msg(
+                        "INFO",
+                        f"[{session_id[:12]}] Dropped stale event from run {event_run_id}; current run is {current_run_id}",
+                    )
+                    return
+            stream_state["last_progress_at"] = time.monotonic()
+            event_type = str(event.get("type") or "")
+            if event_type == "tool":
+                tool_name = str(event.get("name") or "tool")
+                tool_status = str(event.get("status") or event.get("event") or "")
+                stream_state["last_activity_label"] = f"{tool_name} {tool_status}".strip()
+            elif event_type in {"delta", "reasoning"}:
+                stream_state["last_activity_label"] = "model output"
+            elif event_type == "status":
+                stream_state["last_activity_label"] = str(event.get("text") or event.get("kind") or "status")
             if event.get("type") == "tool":
                 stream_state["tool_seen"] = True
-                buffered = list(stream_state.get("buffered_events") or [])
-                stream_state["buffered_events"] = []
-                for buffered_event in buffered:
-                    main_loop.call_soon_threadsafe(msg_queue.put_nowait, buffered_event)
+                is_real_action_tool = _tool_event_is_real_action(event)
+                if stream_state.get("guard_required"):
+                    log_msg(
+                        "INFO",
+                        f"[{session_id[:12]}] Tool event classified: name={event.get('name') or event.get('tool') or event.get('tool_name') or 'tool'} "
+                        f"status={event.get('status') or event.get('event') or ''} real_action={is_real_action_tool}",
+                    )
+                if is_real_action_tool:
+                    stream_state["real_action_seen"] = True
+                    with session_lock:
+                        current_run_id = int((sessions.get(session_id) or {}).get("run_id") or 0)
+                    evidence = _tool_event_evidence(event, session_id, current_run_id)
+                    if evidence:
+                        stream_state.setdefault("execution_evidence", []).append(evidence)
+                        _write_execution_evidence(session_id, current_run_id, evidence)
+                    buffered = list(stream_state.get("buffered_events") or [])
+                    stream_state["buffered_events"] = []
+                    for buffered_event in buffered:
+                        main_loop.call_soon_threadsafe(msg_queue.put_nowait, buffered_event)
             if event.get("type") == "delta" and event.get("text"):
                 stream_state["chunks"].append(str(event.get("text") or ""))
-                if stream_state.get("guard_required") and not stream_state.get("tool_seen"):
+                if (
+                    not stream_state.get("repetition_blocked")
+                    and _looks_like_repetition_loop("".join(stream_state.get("chunks") or []))
+                ):
+                    stream_state["repetition_blocked"] = True
+                    with session_lock:
+                        current = sessions.get(session_id)
+                        if current is not None:
+                            current["interrupt_requested"] = True
+                    main_loop.call_soon_threadsafe(
+                        msg_queue.put_nowait,
+                        {
+                            "type": "error",
+                            "text": "检测到模型输出进入重复循环，已自动停止本轮。你可以换个说法继续发送。",
+                        },
+                    )
+                    return
+                if stream_state.get("guard_required") and not stream_state.get("real_action_seen"):
                     stream_state.setdefault("buffered_events", []).append(event)
                     return
         except Exception:
@@ -2952,7 +3859,13 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             stream_state["chunks"] = []
             stream_state["buffered_events"] = []
             stream_state["tool_seen"] = False
+            stream_state["real_action_seen"] = False
+            stream_state["execution_evidence"] = []
+            stream_state["repetition_blocked"] = False
             stream_state["guard_required"] = _requires_real_tool_action(message)
+            stream_state["last_progress_at"] = time.monotonic()
+            stream_state["turn_started_at"] = stream_state["last_progress_at"]
+            stream_state["last_activity_label"] = "starting"
 
             if not message:
                 await websocket.send_json({"type": "error", "text": "Empty message"})
@@ -2972,10 +3885,14 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 if _looks_like_tool_dispute(message):
                     s["last_tool_dispute_at"] = time.time()
                 s["callbacks"] = {"emit": emit_event}
-                already_running = bool(s.get("running"))
+                active_thread = s.get("agent_thread")
+                already_running = bool(s.get("running")) or bool(active_thread and active_thread.is_alive())
             if already_running:
-                await websocket.send_json({"type": "error", "text": "Session is already running"})
+                await websocket.send_json({"type": "error", "text": "上一轮还在执行或正在停止，请等待完成，或先点停止。"})
                 continue
+            stale_events = drain_stale_events()
+            if stale_events:
+                log_msg("INFO", f"[{session_id[:12]}] Drained {stale_events} stale event(s) before new turn")
             if s["agent"] is None:
                 try:
                     await websocket.send_json({"type": "status", "text": "Initializing agent..."})
@@ -3024,6 +3941,11 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 if not session.get("history"):
                     session["history"] = _load_history_from_db(session_id)
                 conversation_history = list(session.get("history") or [])
+                turn_requires_real_tool = bool(stream_state.get("guard_required")) or _continuation_requires_real_tool_action(
+                    message,
+                    conversation_history,
+                )
+                stream_state["guard_required"] = turn_requires_real_tool
                 session["history"] = conversation_history + [{"role": "user", "content": message}]
                 session["run_id"] = int(session.get("run_id") or 0) + 1
                 session["interrupt_requested"] = False
@@ -3051,17 +3973,30 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             error_holder = {}
 
             def run_agent():
+                thread_ident = threading.get_ident()
+                _desktop_event_runs[thread_ident] = (session_id, run_id)
                 try:
                     r = session["agent"].run_conversation(
                         user_message=message,
                         conversation_history=agent_history,
                         task_id=session_id,
                     )
-                    used_real_tool = _result_used_real_tool(r)
-                    if _requires_real_tool_action(message) and not used_real_tool:
+                    evidence_count = len(stream_state.get("execution_evidence") or [])
+                    used_real_tool = bool(stream_state.get("real_action_seen")) or _result_used_real_tool(
+                        r,
+                        baseline_message_count=len(persisted_user_history),
+                    )
+                    final_candidate = _final_text_from_result(r) if isinstance(r, dict) else ""
+                    claims_unverified_execution = _assistant_claims_unverified_execution(final_candidate)
+                    if (stream_state.get("guard_required") or claims_unverified_execution) and not used_real_tool:
                         log_msg(
                             "WARN",
-                            f"[{session_id[:12]}] Blocked text-only execution claim for tool-required request",
+                            f"[{session_id[:12]}] Blocked text-only execution claim for tool-required request "
+                            f"(baseline={len(persisted_user_history)}, tool_seen={bool(stream_state.get('tool_seen'))}, "
+                            f"real_action_seen={bool(stream_state.get('real_action_seen'))}, "
+                            f"guard_required={bool(stream_state.get('guard_required'))}, "
+                            f"claimed_execution={bool(claims_unverified_execution)}, "
+                            f"evidence_count={evidence_count})",
                         )
                         stream_state["chunks"] = []
                         stream_state["buffered_events"] = []
@@ -3069,20 +4004,27 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                             current = sessions.get(session_id)
                             if current is session:
                                 current["last_fake_execution_blocked"] = True
+                        guard_text = _execution_guard_text(
+                            bool(stream_state.get("guard_required")),
+                            bool(stream_state.get("tool_seen")),
+                            evidence_count,
+                        )
                         r = {
                             "messages": persisted_user_history + [
-                                {"role": "assistant", "content": _fake_execution_guard_text()}
+                                {"role": "assistant", "content": guard_text}
                             ],
-                            "final_response": _fake_execution_guard_text(),
+                            "final_response": guard_text,
                             "api_calls": (r or {}).get("api_calls", 1) if isinstance(r, dict) else 1,
                             "__desktop_blocked_fake_execution": True,
                             "__desktop_discard_stream": True,
+                            "__desktop_skip_persist_response": True,
                         }
                     elif used_real_tool:
                         with session_lock:
                             current = sessions.get(session_id)
                             if current is session:
                                 current["last_fake_execution_blocked"] = False
+                                current["last_execution_evidence"] = list(stream_state.get("execution_evidence") or [])
                     if isinstance(r, dict):
                         r = _safe_result_for_desktop(r, persisted_user_history)
                     with session_lock:
@@ -3115,13 +4057,21 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                         log_msg("TRACE", f"[{session_id[:12]}] {line}")
                     error_holder["error"] = str(e)
                 finally:
+                    _desktop_event_runs.pop(thread_ident, None)
                     with session_lock:
                         current = sessions.get(session_id)
-                        if current is session:
+                        if (
+                            current is session
+                            and int(current.get("run_id") or 0) == run_id
+                            and current.get("agent_thread") is agent_thread
+                        ):
                             current["running"] = False
                             current["agent_thread"] = None
                             current["interrupt_requested"] = False
-                    main_loop.call_soon_threadsafe(msg_queue.put_nowait, None)
+                    main_loop.call_soon_threadsafe(
+                        msg_queue.put_nowait,
+                        {"type": "__turn_done", "__run_id": run_id},
+                    )
 
             agent_thread = threading.Thread(target=run_agent, daemon=True)
             with session_lock:
@@ -3131,6 +4081,12 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
 
             # Drain queue while agent runs (streaming output)
             cancelled_by_interrupt = False
+            timed_out_while_waiting = False
+            turn_started_at = time.monotonic()
+            stream_state["turn_started_at"] = turn_started_at
+            stream_state["last_progress_at"] = turn_started_at
+            last_heartbeat_at = turn_started_at
+            stuck_hint_sent = False
             while agent_thread.is_alive() or not msg_queue.empty():
                 with session_lock:
                     current = sessions.get(session_id)
@@ -3142,26 +4098,84 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     )
                 if cancelled_by_interrupt:
                     break
+                now = time.monotonic()
+                last_progress_at = float(stream_state.get("last_progress_at") or turn_started_at)
+                if agent_thread.is_alive() and now - last_heartbeat_at >= AGENT_HEARTBEAT_SECONDS:
+                    last_heartbeat_at = now
+                    elapsed = int(now - turn_started_at)
+                    idle = int(now - last_progress_at)
+                    activity = str(stream_state.get("last_activity_label") or "working")
+                    await safe_send({
+                        "type": "status",
+                        "kind": "heartbeat",
+                        "text": f"仍在处理（已用 {elapsed}s，距离上次事件 {idle}s）：{activity}",
+                    })
+                if (
+                    agent_thread.is_alive()
+                    and not stuck_hint_sent
+                    and now - last_progress_at >= AGENT_STUCK_HINT_SECONDS
+                ):
+                    stuck_hint_sent = True
+                    log_msg(
+                        "WARN",
+                        f"[{session_id[:12]}] Long quiet turn: "
+                        f"idle={now - last_progress_at:.1f}s, total={now - turn_started_at:.1f}s; keeping turn alive",
+                    )
+                    await safe_send({
+                        "type": "status",
+                        "kind": "slow",
+                        "text": "这轮已经安静等待较久，但我不会自动中断。可能仍在等待模型或工具；如果确认不需要继续，可以点停止。",
+                    })
                 try:
                     msg = await asyncio.wait_for(msg_queue.get(), timeout=0.05)
-                    if msg is None:  # Sentinel — agent finished
-                        break
+                    stream_state["last_progress_at"] = time.monotonic()
+                    if isinstance(msg, dict) and msg.get("type") == "__turn_done":
+                        if int(msg.get("__run_id") or 0) == run_id:
+                            break
+                        continue
                     await safe_send(msg)
                 except asyncio.TimeoutError:
                     continue
 
-            agent_thread.join(timeout=INTERRUPT_JOIN_TIMEOUT if cancelled_by_interrupt else 30)
+            cancelled_before_join = bool(cancelled_by_interrupt)
+            join_timeout = INTERRUPT_JOIN_TIMEOUT if cancelled_before_join else AGENT_JOIN_TIMEOUT
+            agent_thread.join(timeout=join_timeout)
+            thread_still_alive = agent_thread.is_alive()
+            timed_out = bool(timed_out_while_waiting)
             with session_lock:
-                if not agent_thread.is_alive():
+                if not thread_still_alive:
                     session["running"] = False
                     session["agent_thread"] = None
                     session["interrupt_requested"] = False
-            if cancelled_by_interrupt and "result" not in result_holder and "error" not in error_holder:
+                else:
+                    cancelled_by_interrupt = True
+                    if session.get("agent_thread") is agent_thread:
+                        session["running"] = True
+                    log_msg(
+                        "INFO",
+                        f"[{session_id[:12]}] Agent thread still alive after wait; keeping session locked",
+                    )
+            if cancelled_by_interrupt and not thread_still_alive and "result" not in result_holder and "error" not in error_holder:
                 result_holder["result"] = {
                     "messages": persisted_user_history,
                     "final_response": "",
                     "interrupted": True,
+                    "__desktop_timeout": timed_out,
                 }
+
+            if cancelled_before_join:
+                result_holder.clear()
+                error_holder.clear()
+                try:
+                    latest_history = _load_history_from_db(session_id)
+                    if latest_history:
+                        with session_lock:
+                            if sessions.get(session_id) is session:
+                                session["history"] = latest_history
+                    await safe_send({"type": "session.updated", "session_id": session_id})
+                except Exception:
+                    pass
+                continue
 
             # Process result
             if "result" in result_holder:
@@ -3183,7 +4197,13 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     if last.get("role") == "assistant":
                         final_text = last.get("content", "")
                 if result.get("interrupted"):
-                    await safe_send({"type": "info", "text": "Interrupted"})
+                    if result.get("__desktop_timeout"):
+                        await safe_send({
+                            "type": "error",
+                            "text": "本轮后台等待异常结束。你可以继续发送新消息，或重试这一步。",
+                        })
+                    else:
+                        await safe_send({"type": "info", "text": "Interrupted"})
                 if interrupted_unfinalized:
                     final_text = ""
                 streamed_text = "" if result.get("__desktop_discard_stream") else "".join(stream_state.get("chunks") or [])
@@ -3204,9 +4224,18 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                         except Exception as e:
                             log_msg("WARN", f"[{session_id[:12]}] Replace merged history failed: {e}")
 
+                # Replace local cache paths in markdown images with server URLs
+                _display_text = final_text or "(no response)"
+                _home_pattern = re.escape(str(HERMES_HOME).replace("\\", "/"))
+                # Simplest: just swap the path, keep the markdown image syntax intact (but empty the alt)
+                _display_text = re.sub(
+                    r'!\[[^\]]*\]\(' + _home_pattern + r'[/\\]cache[/\\](images|videos)[/\\]([^\)\s]+?\.(?:png|jpe?g|gif|webp|svg|bmp|ico|mp4|webm|mov|avi))\)',
+                    r'![](/api/media/cache/\1/\2)',
+                    _display_text,
+                )
                 await safe_send({
                     "type": "done",
-                    "text": final_text or "(no response)",
+                    "text": _display_text,
                     "interrupted": bool(result.get("interrupted")),
                 })
                 if final_text and not result.get("interrupted"):
@@ -4516,3 +5545,6 @@ if __name__ == "__main__":
         webview.start()
         log_msg("INFO", "Window closed, exiting...")
         os._exit(0)
+
+
+
