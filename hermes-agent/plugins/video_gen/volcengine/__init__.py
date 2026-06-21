@@ -16,7 +16,7 @@ from agent.video_gen_provider import (
 
 logger = logging.getLogger(__name__)
 
-API_BASE = "https://ark.cn-beijing.volces.com/api/v3"
+API_BASE = "https://ark.cn-beijing.volces.com/api/plan/v3"
 TASKS_URL = f"{API_BASE}/contents/generations/tasks"
 POLL_INTERVAL = 3.0
 POLL_TIMEOUT = 300
