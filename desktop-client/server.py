@@ -1303,61 +1303,30 @@ def _prepare_agent_history_for_turn(history: list[dict]) -> tuple[list[dict], li
     return full[:start], full[start:]
 
 def _requires_real_tool_action(message: str) -> bool:
+    """Return True only when the user is clearly commanding a real-world action NOW.
+
+    Uses a tight phrase list — no generic keyword matching.  Asking about code,
+    discussing a skill, or checking how something works should NOT trigger this.
+    The actual lie-detection ("model claimed to execute but didn't call a tool")
+    is handled separately by _assistant_claims_unverified_execution.
+    """
     text = str(message or "").lower()
     if not text:
         return False
     force_action_phrases = [
+        "帮我点击", "帮我输入", "帮我发送", "帮我打开",
+        "帮我创建", "帮我新建", "帮我删除", "帮我运行", "帮我执行",
+        "帮我操作", "帮我测试", "帮我生成", "帮我在",
         "现在执行", "立即执行", "马上执行", "直接执行",
         "现在运行", "现在打开", "现在点击", "现在输入", "现在发送",
-        "现在给", "帮我点击", "帮我输入", "帮我发送", "帮我打开",
-        "运行脚本", "执行脚本", "打开微信", "打开窗口",
-        "创建文件", "新建文件", "删除文件", "操作微信", "测试微信", "测试脚本",
-        "检查微信", "查看微信", "检查消息", "查看消息", "检查未读", "查看未读",
-        "回复他", "回复她", "回复消息", "双击消息按钮", "点击消息按钮", "监控微信",
+        "现在创建", "现在生成", "现在操作",
+        "打开微信", "操作微信", "运行脚本", "执行脚本",
+        "创建文件", "新建文件", "删除文件",
+        "回复他", "回复她", "回复消息", "回复这条",
         "run the script", "execute the script", "open wechat", "send message",
         "create file", "delete file",
     ]
-    planning_markers = [
-        "先沟通", "沟通方案", "先讨论", "讨论方案", "先梳理", "梳理流程",
-        "我们先", "我们要", "不要急", "不着急", "不要急着", "先记住",
-        "你只要", "每5秒", "如果有", "只回复",
-        "记住这些", "记录下来", "方案", "流程", "规划", "思路", "设计",
-        "你觉得", "建议", "可行", "后续", "以后", "暂时", "先测试",
-        "先确认", "确认后", "需求", "规则", "逻辑",
-        "不要改", "不要写代码", "不要执行", "不用执行", "不需要执行",
-        "不必执行", "不必操作", "不必调用", "不用操作", "无需执行",
-        "只是问", "只是问下", "只是问一下", "只是问一问", "就是问", "就是问下",
-        "探讨", "讨论下", "确认下", "了解下", "看下", "问下", "问一下",
-        "plan", "proposal", "design", "workflow", "discuss", "remember",
-        "later", "after that",
-    ]
-    if any(marker in text for marker in planning_markers) and not any(
-        phrase in text for phrase in force_action_phrases
-    ):
-        return False
-    action_words = [
-        "\u521b\u5efa", "\u65b0\u5efa", "\u5199\u5165", "\u5199\u4e2a", "\u4fdd\u5b58",
-        "\u5220\u9664", "\u590d\u5236", "\u79fb\u52a8", "\u91cd\u547d\u540d",
-        "\u6253\u5f00", "\u5173\u95ed", "\u70b9\u51fb", "\u8f93\u5165", "\u53d1\u9001",
-        "\u7c98\u8d34", "\u4e0b\u8f7d", "\u4e0a\u4f20", "\u8fd0\u884c", "\u6267\u884c",
-        "\u64cd\u4f5c", "\u6d4b\u8bd5", "\u8bd5\u8bd5", "\u5c1d\u8bd5", "\u751f\u6210",
-        "\u7f6e\u4e8e", "\u653e\u5230", "\u5b9a\u4f4d",
-        "\u53d1\u4e00\u6761", "\u53d1\u6761", "\u53d1\u7ed9",
-        "查看", "检查", "回复", "双击", "截图", "置顶", "监控", "读取", "确认",
-        "create", "write", "save", "delete", "copy", "move", "rename",
-        "open", "click", "type", "send", "paste", "download", "upload", "run",
-        "execute", "operate", "test", "try", "generate",
-    ]
-    target_words = [
-        "\u684c\u9762", "\u6587\u4ef6", "\u6587\u4ef6\u5939", "\u76ee\u5f55",
-        "\u5fae\u4fe1", "qq", "\u7a97\u53e3", "\u672c\u5730", "\u7535\u8111",
-        "\u597d\u53cb", "\u6d88\u606f", "\u811a\u672c", "\u6280\u80fd",
-        "AI数字人", "ai数字人", "消息按钮", "未读", "未读消息", "红色数字",
-        "聊天人列表", "聊天列表", "会话列表", "微信窗口", "输入框",
-        "desktop", "file", "folder", "directory", "wechat", "window", "local",
-        "message", "script", "skill",
-    ]
-    return any(word in text for word in action_words) and any(word in text for word in target_words)
+    return any(phrase in text for phrase in force_action_phrases)
 
 def _continuation_requires_real_tool_action(message: str, conversation_history: list[dict] | None) -> bool:
     """Detect short follow-up commands that inherit a real-world action target."""
