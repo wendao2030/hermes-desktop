@@ -4422,7 +4422,7 @@ if __name__ == "__main__":
         log_msg("WARN", f"Startup main-session prewarm skipped: {e}")
 
     # --- Win32: set custom icon + floating bubble widget ---
-    icon_path = str(STATIC_DIR / "hermes.ico")
+    icon_path = str(STATIC_DIR / "hermes_pony.ico")
     logo_path = str(STATIC_DIR / "hermes_logo.png")
 
     import ctypes as _ct
