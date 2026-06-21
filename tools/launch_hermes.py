@@ -129,6 +129,10 @@ def main() -> int:
     os.environ["HERMES_HOME"] = str(HERMES_HOME)
     os.environ["HERMES_DISABLE_OPTIONAL_DEP_INSTALL"] = "1"
     os.environ["HERMES_DESKTOP_SERVE_ONLY"] = "1"
+    # Use system Edge instead of downloading Chromium
+    _edge = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+    if os.path.exists(_edge):
+        os.environ.setdefault("PUPPETEER_EXECUTABLE_PATH", _edge)
 
     log(f"Launcher started, home={HERMES_HOME}")
     launcher_lock = _acquire_launcher_lock()
