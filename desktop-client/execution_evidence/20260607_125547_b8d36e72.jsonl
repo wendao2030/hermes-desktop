@@ -212,3 +212,15 @@
 {"ts": "2026-06-21T13:49:50", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "started", "command": ""}
 {"ts": "2026-06-21T13:49:51", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "tool.completed", "command": ""}
 {"ts": "2026-06-21T13:49:51", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "complete", "command": ""}
+{"ts": "2026-06-21T13:56:08", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "tool.started", "command": ""}
+{"ts": "2026-06-21T13:56:08", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "started", "command": ""}
+{"ts": "2026-06-21T13:56:44", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "tool.completed", "command": ""}
+{"ts": "2026-06-21T13:56:44", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "complete", "command": ""}
+{"ts": "2026-06-21T13:56:51", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "tool.started", "command": ""}
+{"ts": "2026-06-21T13:56:51", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "started", "command": ""}
+{"ts": "2026-06-21T13:57:46", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "tool.completed", "command": ""}
+{"ts": "2026-06-21T13:57:46", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "complete", "command": ""}
+{"ts": "2026-06-21T13:57:49", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "terminal", "status": "tool.started", "command": ""}
+{"ts": "2026-06-21T13:57:49", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "terminal", "status": "started", "command": ""}
+{"ts": "2026-06-21T13:57:51", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "terminal", "status": "tool.completed", "command": ""}
+{"ts": "2026-06-21T13:57:51", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "terminal", "status": "complete", "command": ""}

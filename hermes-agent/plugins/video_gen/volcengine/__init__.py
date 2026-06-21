@@ -160,13 +160,10 @@ class VolcengineVideoGenProvider(VideoGenProvider):
                 task = r2.json()
                 status = task.get("status", "") or task.get("state", "")
                 if status in ("succeeded", "completed", "done", "success"):
-                    # Extract video URL / b64
-                    video_url = task.get("video_url") or task.get("url")
-                    b64 = task.get("b64_json") or task.get("data")
-                    output = task.get("output") or {}
-                    if isinstance(output, dict):
-                        video_url = video_url or output.get("video_url") or output.get("url")
-                        b64 = b64 or output.get("b64_json") or output.get("data")
+                    # Extract video from content.video_url (Ark API format)
+                    content = task.get("content") or {}
+                    video_url = content.get("video_url") or task.get("video_url") or task.get("url")
+                    b64 = content.get("b64_json") or task.get("b64_json") or task.get("data")
                     if video_url and isinstance(video_url, str) and video_url.startswith("http"):
                         dl = httpx.get(video_url, timeout=120)
                         dl.raise_for_status()
