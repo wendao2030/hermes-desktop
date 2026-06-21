@@ -23,7 +23,7 @@ _MODELS: Dict[str, Dict[str, Any]] = {
 
 DEFAULT_MODEL = "doubao-seedream-5.0-lite"
 
-_SIZE_MAP = {"landscape": "1024x576", "square": "1024x1024", "portrait": "576x1024"}
+_SIZE_MAP = {"landscape": "2560x1440", "square": "2048x2048", "portrait": "1440x2560"}
 
 
 def _load_config() -> Dict[str, Any]:

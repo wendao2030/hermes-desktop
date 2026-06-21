@@ -1,0 +1,4 @@
+{"ts": "2026-06-21T14:14:15", "session_id": "20260620_205719_7b65387a", "run_id": 1, "tool": "write_file", "status": "tool.started", "command": ""}
+{"ts": "2026-06-21T14:14:15", "session_id": "20260620_205719_7b65387a", "run_id": 1, "tool": "write_file", "status": "started", "command": ""}
+{"ts": "2026-06-21T14:14:18", "session_id": "20260620_205719_7b65387a", "run_id": 1, "tool": "write_file", "status": "tool.completed", "command": ""}
+{"ts": "2026-06-21T14:14:18", "session_id": "20260620_205719_7b65387a", "run_id": 1, "tool": "write_file", "status": "complete", "command": ""}
