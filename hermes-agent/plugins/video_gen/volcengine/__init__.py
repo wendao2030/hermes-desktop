@@ -124,11 +124,15 @@ class VolcengineVideoGenProvider(VideoGenProvider):
         headers = _make_headers(api_key)
         size = _RESOLUTION_MAP.get(resolution, _RESOLUTION_MAP["720p"])
 
-        # 1. Create task
-        payload: Dict[str, Any] = {"model": model_id, "prompt": prompt,
-                                   "size": size, "duration": duration}
+        # 1. Create task (content array format per Ark API)
+        content: list = [{"type": "text", "text": prompt}]
         if image_url:
-            payload["image"] = image_url
+            content.append({"type": "image_url", "image_url": {"url": image_url}})
+        payload: Dict[str, Any] = {
+            "model": model_id,
+            "content": content,
+            "parameters": {"size": size, "duration": duration},
+        }
 
         try:
             r = httpx.post(TASKS_URL, json=payload, headers=headers, timeout=30)

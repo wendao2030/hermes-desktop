@@ -208,3 +208,7 @@
 {"ts": "2026-06-21T13:10:16", "session_id": "20260607_125547_b8d36e72", "run_id": 3, "tool": "image_generate", "status": "started", "command": ""}
 {"ts": "2026-06-21T13:10:17", "session_id": "20260607_125547_b8d36e72", "run_id": 3, "tool": "image_generate", "status": "tool.completed", "command": ""}
 {"ts": "2026-06-21T13:10:17", "session_id": "20260607_125547_b8d36e72", "run_id": 3, "tool": "image_generate", "status": "complete", "command": ""}
+{"ts": "2026-06-21T13:49:50", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "tool.started", "command": ""}
+{"ts": "2026-06-21T13:49:50", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "started", "command": ""}
+{"ts": "2026-06-21T13:49:51", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "tool.completed", "command": ""}
+{"ts": "2026-06-21T13:49:51", "session_id": "20260607_125547_b8d36e72", "run_id": 1, "tool": "video_generate", "status": "complete", "command": ""}
