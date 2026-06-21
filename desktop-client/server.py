@@ -32,10 +32,14 @@ HERMES_AGENT = HERMES_HOME / "hermes-agent"
 HERMES_VENV_SITE = HERMES_HOME / "hermes-agent" / "venv" / "Lib" / "site-packages"
 os.environ["HERMES_HOME"] = str(HERMES_HOME)
 os.environ.setdefault("HERMES_DESKTOP_SERVE_ONLY", "1")
-# Use system Edge for browser automation instead of downloading Chromium
-_edge = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
-if os.path.exists(_edge):
-    os.environ.setdefault("PUPPETEER_EXECUTABLE_PATH", _edge)
+# Auto-detect Chromium browser (Edge > Chrome > Chromium) for Playwright
+_browser = shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
+if not _browser:
+    for _d in filter(bool, [os.environ.get("PROGRAMFILES", ""), os.environ.get("PROGRAMFILES(X86)", ""), os.environ.get("LOCALAPPDATA", "")]):
+        _c = os.path.join(_d, "Microsoft", "Edge", "Application", "msedge.exe")
+        if os.path.isfile(_c): _browser = _c; break
+if _browser:
+    os.environ.setdefault("PUPPETEER_EXECUTABLE_PATH", _browser)
 if HERMES_VENV_SITE.exists():
     sys.path.insert(0, str(HERMES_VENV_SITE))
 sys.path.insert(0, str(HERMES_AGENT))

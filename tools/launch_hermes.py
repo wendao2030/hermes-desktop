@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -129,10 +130,14 @@ def main() -> int:
     os.environ["HERMES_HOME"] = str(HERMES_HOME)
     os.environ["HERMES_DISABLE_OPTIONAL_DEP_INSTALL"] = "1"
     os.environ["HERMES_DESKTOP_SERVE_ONLY"] = "1"
-    # Use system Edge instead of downloading Chromium
-    _edge = "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
-    if os.path.exists(_edge):
-        os.environ.setdefault("PUPPETEER_EXECUTABLE_PATH", _edge)
+    # Auto-detect Chromium browser (Edge > Chrome > Chromium) for Playwright
+    _browser = shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
+    if not _browser:
+        for _d in filter(bool, [os.environ.get("PROGRAMFILES", ""), os.environ.get("PROGRAMFILES(X86)", ""), os.environ.get("LOCALAPPDATA", "")]):
+            _c = os.path.join(_d, "Microsoft", "Edge", "Application", "msedge.exe")
+            if os.path.isfile(_c): _browser = _c; break
+    if _browser:
+        os.environ.setdefault("PUPPETEER_EXECUTABLE_PATH", _browser)
 
     log(f"Launcher started, home={HERMES_HOME}")
     launcher_lock = _acquire_launcher_lock()
