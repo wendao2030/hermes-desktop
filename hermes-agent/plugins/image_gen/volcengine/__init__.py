@@ -97,7 +97,8 @@ class VolcengineImageGenProvider(ImageGenProvider):
                                   provider="volcengine")
 
         model_id, meta = _resolve_model()
-        size = _SIZE_MAP.get(aspect, _SIZE_MAP["square"])
+        # Prefer caller-specified size, fall back to aspect ratio map
+        size = kwargs.get("size") or _SIZE_MAP.get(aspect, _SIZE_MAP["square"])
 
         try:
             from openai import OpenAI

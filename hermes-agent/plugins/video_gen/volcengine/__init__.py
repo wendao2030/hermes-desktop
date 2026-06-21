@@ -109,7 +109,7 @@ class VolcengineVideoGenProvider(VideoGenProvider):
 
     def generate(self, prompt: str, image_url: Optional[str] = None,
                  aspect_ratio: str = DEFAULT_ASPECT_RATIO,
-                 duration: int = 5, resolution: str = DEFAULT_RESOLUTION,
+                 duration: int = 10, resolution: str = DEFAULT_RESOLUTION,
                  **kwargs: Any) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         if not prompt:
