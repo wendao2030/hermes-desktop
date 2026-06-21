@@ -42,19 +42,19 @@ If a change is needed, ask the user to let the maintainer update the skill. Do n
 
 Skill folder:
 
-C:\Users\dtyao\AppData\Local\hermes\skills\software-development\wechat-messaging
+$env:HERMES_HOME\skills\software-development\wechat-messaging
 
 Scripts folder:
 
-C:\Users\dtyao\AppData\Local\hermes\skills\software-development\wechat-messaging\scripts
+$env:HERMES_HOME\skills\software-development\wechat-messaging\scripts
 
 Use Hermes private Python:
 
-C:\Users\dtyao\AppData\Local\hermes\venv\Scripts\python.exe
+$env:HERMES_HOME\hermes-agent\venv\Scripts\python.exe
 
 Temporary screenshots:
 
-C:\Users\dtyao\AppData\Local\hermes\skills\software-development\wechat-messaging\temp_screenshots
+$env:HERMES_HOME\skills\software-development\wechat-messaging\temp_screenshots
 
 ## Approved Script Roles
 
@@ -134,7 +134,7 @@ Chinese search debug pattern, no message is sent:
 
 ```powershell
 $env:HERMES_WECHAT_CONTACT='姐姐'
-C:\Users\dtyao\AppData\Local\hermes\venv\Scripts\python.exe C:\Users\dtyao\AppData\Local\hermes\skills\software-development\wechat-messaging\scripts\send_message.py --search-only
+$env:HERMES_HOME\hermes-agent\venv\Scripts\python.exe $env:HERMES_HOME\skills\software-development\wechat-messaging\scripts\send_message.py --search-only
 ```
 
 Example command pattern:
@@ -142,7 +142,7 @@ Example command pattern:
 ```powershell
 $env:HERMES_WECHAT_CONTACT='AI数字人'
 $env:HERMES_WECHAT_MESSAGE='测试消息'
-C:\Users\dtyao\AppData\Local\hermes\venv\Scripts\python.exe C:\Users\dtyao\AppData\Local\hermes\skills\software-development\wechat-messaging\scripts\send_message.py
+$env:HERMES_HOME\hermes-agent\venv\Scripts\python.exe $env:HERMES_HOME\skills\software-development\wechat-messaging\scripts\send_message.py
 ```
 
 ## Flow B: Monitor Unread Messages For A Contact

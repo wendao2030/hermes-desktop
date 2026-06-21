@@ -1,0 +1,36 @@
+{
+  "id": "20260621_160415_19d07106",
+  "created_at": "2026-06-21T16:04:15.960333",
+  "label": "手动保存 2026/6/21 16:04:15",
+  "reason": "manual-ui",
+  "targets": [
+    "state",
+    "memory",
+    "user"
+  ],
+  "files": [
+    {
+      "target": "state",
+      "source": "C:\\Users\\dtyao\\AppData\\Local\\hermes\\state.db",
+      "stored": "state.db",
+      "size": 2461696,
+      "sha256": "8c26282ed891ff618d731b1f1c30103ee43898ac961c34477962c530f412e699"
+    },
+    {
+      "target": "memory",
+      "source": "C:\\Users\\dtyao\\AppData\\Local\\hermes\\memories\\MEMORY.md",
+      "stored": "MEMORY.md",
+      "size": 1408,
+      "sha256": "2ebd436d5252edec086e249c716d600d395097d8610d522f762a89a00063648d"
+    },
+    {
+      "target": "user",
+      "source": "C:\\Users\\dtyao\\AppData\\Local\\hermes\\memories\\USER.md",
+      "stored": "USER.md",
+      "size": 995,
+      "sha256": "8b20df5f974ae3dd0ae1d231395bdf3aa242114d5fb8f06364148a3edc3675f7"
+    }
+  ],
+  "missing": [],
+  "hermes_home": "C:\\Users\\dtyao\\AppData\\Local\\hermes"
+}
