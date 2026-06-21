@@ -122,16 +122,16 @@ class VolcengineVideoGenProvider(VideoGenProvider):
 
         model_id, meta = _resolve_model()
         headers = _make_headers(api_key)
-        size = _RESOLUTION_MAP.get(resolution, _RESOLUTION_MAP["720p"])
-
-        # 1. Create task (content array format per Ark API)
+        # 1. Create task (duration/ratio/resolution at top level)
         content: list = [{"type": "text", "text": prompt}]
         if image_url:
             content.append({"type": "image_url", "image_url": {"url": image_url}})
         payload: Dict[str, Any] = {
             "model": model_id,
             "content": content,
-            "parameters": {"size": size, "duration": duration},
+            "duration": duration,
+            "ratio": aspect_ratio,
+            "resolution": resolution,
         }
 
         try:
