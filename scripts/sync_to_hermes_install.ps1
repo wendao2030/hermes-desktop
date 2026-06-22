@@ -106,8 +106,8 @@ $commonExcludeFiles = @(
 Invoke-RoboMirror `
     -From (Join-Path $Source "desktop-client") `
     -To (Join-Path $Target "desktop-client") `
-    -ExcludeDirs ($commonExcludeDirs + @("sessions", "uploads")) `
-    -ExcludeFiles ($commonExcludeFiles + @("state.json", "_test.bmp"))
+    -ExcludeDirs ($commonExcludeDirs + @("sessions", "uploads", "execution_evidence")) `
+    -ExcludeFiles ($commonExcludeFiles + @("state.json", "state.db", "state.db-shm", "state.db-wal", "bubble_init_debug.json", "_test.bmp", "_bubble_*.bmp"))
 
 Invoke-RoboMirror `
     -From (Join-Path $Source "hermes-agent") `
@@ -118,7 +118,7 @@ Invoke-RoboMirror `
 Invoke-RoboMirror `
     -From (Join-Path $Source "skills") `
     -To (Join-Path $Target "skills") `
-    -ExcludeDirs ($commonExcludeDirs + @(".cache")) `
+    -ExcludeDirs ($commonExcludeDirs + @(".cache", ".hub", ".curator_backups", "temp_screenshots")) `
     -ExcludeFiles ($commonExcludeFiles + @(".usage.json"))
 
 Invoke-RoboMirror `
@@ -148,11 +148,13 @@ Invoke-RoboMirror `
 Copy-IfExists (Join-Path $Source "config.yaml") (Join-Path $Target "config.yaml")
 Copy-IfExists (Join-Path $Source "SOUL.md") (Join-Path $Target "SOUL.md")
 Copy-IfExists (Join-Path $Source "RULES_FOR_AI.md") (Join-Path $Target "RULES_FOR_AI.md")
+Copy-IfExists (Join-Path $Source "tools\launch_hermes.py") (Join-Path $Target "tools\launch_hermes.py")
 
 @(
     "desktop-client\sessions",
     "desktop-client\__pycache__",
     "desktop-client\uploads",
+    "desktop-client\execution_evidence",
     "hermes-agent\venv",
     "hermes-agent\node_modules",
     "test_install\venv",
@@ -176,6 +178,9 @@ Copy-IfExists (Join-Path $Source "RULES_FOR_AI.md") (Join-Path $Target "RULES_FO
     ".env",
     "processes.json",
     "desktop-client\state.json",
+    "desktop-client\state.db",
+    "desktop-client\state.db-shm",
+    "desktop-client\state.db-wal",
     "desktop-client\bubble_init_debug.json"
 ) | ForEach-Object {
     Remove-TargetPath (Join-Path $Target $_)
