@@ -129,6 +129,9 @@ def _open_default_browser() -> None:
 def main() -> int:
     os.environ["HERMES_HOME"] = str(HERMES_HOME)
     os.environ["HERMES_DISABLE_OPTIONAL_DEP_INSTALL"] = "1"
+    os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+    os.environ["HERMES_AGENT_VENV"] = str(HERMES_HOME / "hermes-agent" / "venv")
+    os.environ["HERMES_VENV_PYTHON"] = str(HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe")
     os.environ["HERMES_DESKTOP_SERVE_ONLY"] = "1"
     # Auto-detect Chromium browser (Edge > Chrome > Chromium) for Playwright
     _browser = shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")

@@ -44,6 +44,11 @@ from __future__ import annotations
 
 import json
 import logging
+import base64
+import mimetypes
+import os
+import sqlite3
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.video_gen_provider import (
@@ -95,6 +100,44 @@ VIDEO_GENERATE_SCHEMA: Dict[str, Any] = {
                     "character refs). Only supported by some backends; "
                     "the active backend's description below indicates whether "
                     "this is honored and what the max is."
+                ),
+            },
+            "image_asset_id": {
+                "type": "string",
+                "description": (
+                    "Optional Hermes media asset id for image-to-video, e.g. "
+                    "img_xxx from the current conversation's recent media list."
+                ),
+            },
+            "image_asset_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Optional list of Hermes image asset ids. Use this when "
+                    "the user specifies several generated/uploaded images."
+                ),
+            },
+            "image_path": {
+                "type": "string",
+                "description": "Optional absolute local image path for image-to-video.",
+            },
+            "image_paths": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of absolute local image paths.",
+            },
+            "use_recent_image": {
+                "type": "boolean",
+                "description": (
+                    "Use the most recent image asset from this conversation. "
+                    "Only use when the user explicitly refers to the latest image."
+                ),
+            },
+            "use_recent_group": {
+                "type": "boolean",
+                "description": (
+                    "Use the most recent image group from this conversation. "
+                    "Use for phrases like 'that group of images'."
                 ),
             },
             "duration": {
@@ -307,10 +350,206 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return out or None
 
 
+IMAGE_INPUT_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+
+
+def _as_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item).strip() for item in value if str(item or "").strip()]
+
+
+def _hermes_home() -> Path:
+    raw = os.environ.get("HERMES_HOME")
+    if raw:
+        return Path(raw)
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        local_home = Path(local_app_data) / "hermes"
+        if local_home.exists():
+            return local_home
+    return Path.home() / ".hermes"
+
+
+def _media_asset_rows(session_id: str, *, kind: str = "image", limit: int = 20) -> List[dict]:
+    if not session_id:
+        return []
+    db_path = _hermes_home() / "state.db"
+    if not db_path.exists():
+        return []
+    conn = sqlite3.connect(str(db_path), timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, kind, source, path, url, group_id, created_at, metadata_json
+            FROM media_assets
+            WHERE session_id = ? AND kind = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (session_id, kind, max(1, min(int(limit), 100))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def _media_assets_by_id(session_id: str, asset_ids: List[str]) -> List[dict]:
+    if not session_id or not asset_ids:
+        return []
+    db_path = _hermes_home() / "state.db"
+    if not db_path.exists():
+        return []
+    placeholders = ",".join("?" for _ in asset_ids)
+    conn = sqlite3.connect(str(db_path), timeout=5)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT id, kind, source, path, url, group_id, created_at, metadata_json
+            FROM media_assets
+            WHERE session_id = ? AND id IN ({placeholders}) AND kind = 'image'
+            ORDER BY created_at DESC
+            """,
+            [session_id, *asset_ids],
+        ).fetchall()
+        by_id = {str(row["id"]): dict(row) for row in rows}
+        return [by_id[asset_id] for asset_id in asset_ids if asset_id in by_id]
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+
+
+def _recent_image_group(session_id: str) -> List[dict]:
+    rows = _media_asset_rows(session_id, kind="image", limit=50)
+    if not rows:
+        return []
+    group_id = rows[0].get("group_id")
+    if not group_id:
+        return [rows[0]]
+    return [row for row in rows if row.get("group_id") == group_id]
+
+
+def _local_image_to_data_url(path_value: str) -> str:
+    path = Path(path_value).expanduser()
+    if not path.exists() or not path.is_file():
+        raise ValueError(f"image path does not exist: {path_value}")
+    if path.suffix.lower() not in IMAGE_INPUT_EXTS:
+        raise ValueError(f"unsupported image file type: {path.suffix}")
+    mime = mimetypes.guess_type(str(path))[0] or "image/png"
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{data}"
+
+
+def _normalize_image_ref(ref: str) -> str:
+    value = str(ref or "").strip()
+    if not value:
+        return ""
+    lowered = value.lower()
+    if lowered.startswith(("http://", "https://", "data:image/")):
+        return value
+    if lowered.startswith("/api/media/cache/"):
+        rel = value.split("/api/media/cache/", 1)[1].replace("/", os.sep)
+        value = str((_hermes_home() / "cache" / rel).resolve())
+    return _local_image_to_data_url(value)
+
+
+def _video_image_input_requested(args: Dict[str, Any]) -> bool:
+    keys = (
+        "image_url",
+        "reference_image_urls",
+        "image_asset_id",
+        "image_asset_ids",
+        "image_path",
+        "image_paths",
+        "use_recent_image",
+        "use_recent_group",
+    )
+    return any(bool(args.get(key)) for key in keys)
+
+
+def _resolve_video_image_inputs(args: Dict[str, Any], task_id: str) -> tuple[Optional[str], Optional[List[str]], List[dict]]:
+    explicit_refs: List[str] = []
+    asset_ids = _as_list(args.get("image_asset_id")) + _as_list(args.get("image_asset_ids"))
+    paths = _as_list(args.get("image_path")) + _as_list(args.get("image_paths"))
+    urls = _as_list(args.get("image_url")) + _as_list(args.get("reference_image_urls"))
+    requested = _video_image_input_requested(args)
+    missing_asset_ids: List[str] = []
+    resolution_errors: List[str] = []
+
+    asset_rows = _media_assets_by_id(task_id, asset_ids)
+    found_asset_ids = {str(row.get("id") or "") for row in asset_rows}
+    for asset_id in asset_ids:
+        if asset_id not in found_asset_ids:
+            missing_asset_ids.append(asset_id)
+
+    for row in asset_rows:
+        explicit_refs.append(row.get("url") or row.get("path") or "")
+
+    explicit_refs.extend(paths)
+    explicit_refs.extend(urls)
+
+    if not explicit_refs and _coerce_bool(args.get("use_recent_group")):
+        for row in _recent_image_group(task_id):
+            explicit_refs.append(row.get("url") or row.get("path") or "")
+    elif not explicit_refs and _coerce_bool(args.get("use_recent_image")):
+        rows = _media_asset_rows(task_id, kind="image", limit=1)
+        if rows:
+            explicit_refs.append(rows[0].get("url") or rows[0].get("path") or "")
+
+    if missing_asset_ids:
+        raise ValueError(
+            "image asset not found in this conversation: "
+            + ", ".join(missing_asset_ids)
+        )
+
+    if requested and not explicit_refs:
+        raise ValueError(
+            "no image input could be resolved. Use a valid image_asset_id, "
+            "image_path, image_url, or use_recent_image after an image has "
+            "been generated or uploaded in this conversation."
+        )
+
+    normalized: List[str] = []
+    used: List[dict] = []
+    seen = set()
+    for ref in explicit_refs:
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        try:
+            normalized_ref = _normalize_image_ref(ref)
+        except Exception as exc:
+            resolution_errors.append(f"{ref}: {exc}")
+            continue
+        if normalized_ref:
+            normalized.append(normalized_ref)
+            used.append({
+                "source": "asset_or_path",
+                "input": ref,
+                "kind": "image",
+                "converted": normalized_ref[:80] + ("..." if len(normalized_ref) > 80 else ""),
+            })
+
+    if not normalized:
+        if requested:
+            detail = "; ".join(resolution_errors) if resolution_errors else "empty image input"
+            raise ValueError(f"no usable image input could be prepared: {detail}")
+        return None, None, []
+    return normalized[0], normalized[1:] or None, used
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
-    image_url = (args.get("image_url") or "").strip() or None
-    reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
+    task_id = str(_kw.get("task_id") or "").strip()
     duration = _coerce_int(args.get("duration"))
     aspect_ratio = (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO
     resolution = (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION
@@ -324,6 +563,15 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     # endpoint but our surface always needs a prompt.
     if not prompt:
         return tool_error("prompt is required for video generation")
+
+    try:
+        image_url, reference_image_urls, resolved_inputs = _resolve_video_image_inputs(args, task_id)
+    except Exception as exc:
+        return json.dumps(error_response(
+            error=f"Could not resolve image input for video generation: {exc}",
+            error_type="image_input_not_found",
+            prompt=prompt,
+        ), ensure_ascii=False)
 
     # Resolve the active provider.
     configured = _read_configured_video_provider()
@@ -390,6 +638,9 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
             prompt=prompt,
         ))
 
+    if resolved_inputs:
+        result["resolved_image_inputs"] = resolved_inputs
+
     return json.dumps(result)
 
 
@@ -413,8 +664,11 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
 _GENERIC_DESCRIPTION = (
     "Generate a video from a text prompt (text-to-video) or animate a "
     "still image (image-to-video) using the user's configured video "
-    "generation backend. Pass `image_url` to animate that image; omit it "
-    "to generate from text alone. The backend auto-routes to the right "
+    "generation backend. Pass `image_asset_id`, `image_path`, or `image_url` "
+    "to animate a specific generated/uploaded image; omit image inputs only "
+    "when the user truly wants text-to-video. If an explicit image input "
+    "cannot be resolved, the tool returns an error instead of silently "
+    "falling back to text-to-video. The backend auto-routes to the right "
     "endpoint. The backend and model family are user-configured via "
     "`hermes tools` → Video Generation; the agent does not pick them. "
     "Long-running generations may take 30 seconds to several minutes — "

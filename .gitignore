@@ -60,3 +60,19 @@ $null
 # --- macOS ---
 .DS_Store
 runtime/
+
+# --- Desktop runtime/generated evidence ---
+desktop-client/state.json
+desktop-client/state.db
+desktop-client/execution_evidence/
+desktop-client/static/_bubble*.bmp
+desktop-client/static/_test.bmp
+skills/**/temp_screenshots/
+skills/.curator_backups/
+skills/.hub/
+skills/.usage.json
+skills/.curator_state
+ai_ppt_preview/
+ai_ppt_preview_v2/
+ppt_assets/
+make_ai_ppt.py

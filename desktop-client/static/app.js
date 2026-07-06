@@ -181,13 +181,17 @@ const app = createApp({
         const isStoppingResponse = ref(false);
         const wsStatus = ref('未连接');
         const wsError = ref(false);
-        const config = ref({ model: 'loading...', provider: '', base_url: '', max_turns: 90 });
+        const config = ref({ model: 'loading...', provider: '', base_url: '', max_turns: 90, global_work_dir: '' });
         const uploadedFiles = ref([]);
         const streamingText = ref('');
         const streamingHtml = ref('');
         const showLog = ref(false);
         const serverLogs = ref([]);
         const showSettings = ref(false);
+        const promptSyncBusy = ref(false);
+        const showWorkDirDialog = ref(false);
+        const workDirDraft = ref('');
+        const workDirBusy = ref(false);
         const showVersionDialog = ref(false);
         const versionSnapshots = ref([]);
         const versionBusy = ref(false);
@@ -195,19 +199,24 @@ const app = createApp({
         const activeView = ref('home');
         const sessionListCollapsed = ref(false);
         const sidebarCollapsed = ref(false);
+        const collabAgents = ref([]);
+        const collabLoading = ref(false);
+        const collabTestingId = ref('');
+        const showCollabDialog = ref(false);
+        const collabForm = ref({ id: '', name: '', type: 'resident', endpoint: '', token: '', notes: '' });
 
         function toggleSidebar() {
             sidebarCollapsed.value = !sidebarCollapsed.value;
         }
         const appReady = ref(false);  // true only after onMounted init completes
-        const rightClickMenu = ref({ visible: false, x: 0, y: 0, selected: '', full: '' });
+        const rightClickMenu = ref({ visible: false, x: 0, y: 0, selected: '', full: '', messageId: null });
 
-        function showRightClickMenu(e, selected, full) {
-            rightClickMenu.value = { visible: true, x: e.clientX, y: e.clientY, selected: selected, full: full };
+        function showRightClickMenu(e, selected, full, messageId) {
+            rightClickMenu.value = { visible: true, x: e.clientX, y: e.clientY, selected: selected, full: full, messageId: messageId || null };
         }
 
         function hideRightClickMenu() {
-            rightClickMenu.value = { visible: false, x: 0, y: 0, selected: '', full: '' };
+            rightClickMenu.value = { visible: false, x: 0, y: 0, selected: '', full: '', messageId: null };
         }
 
         function copySelected() {
@@ -219,7 +228,48 @@ const app = createApp({
             navigator.clipboard.writeText(rightClickMenu.value.full).then(function() {});
             hideRightClickMenu();
         }
+
+        async function deleteMessageFromMenu() {
+            const sid = currentSessionId.value;
+            const messageId = rightClickMenu.value.messageId;
+            if (!sid || !messageId) {
+                hideRightClickMenu();
+                return;
+            }
+            if (!confirm('确定删除这条消息吗？删除后它不会再进入上下文。')) {
+                hideRightClickMenu();
+                return;
+            }
+            try {
+                const resp = await fetch('/api/session/' + encodeURIComponent(sid) + '/message/' + encodeURIComponent(messageId), {
+                    method: 'DELETE',
+                });
+                if (!resp.ok) {
+                    let detail = '';
+                    try {
+                        const data = await resp.json();
+                        detail = data.detail || data.error || '';
+                    } catch (e) {}
+                    throw new Error(detail || '删除失败');
+                }
+                messages.value = messages.value.filter(function(m) {
+                    return String(m.id || '') !== String(messageId);
+                });
+                if (sessionMessagesCache[sid]) {
+                    sessionMessagesCache[sid] = sessionMessagesCache[sid].filter(function(m) {
+                        return String(m.id || '') !== String(messageId);
+                    });
+                }
+                await loadSessions();
+            } catch (e) {
+                alert('删除失败：' + (e.message || '未知错误'));
+            } finally {
+                hideRightClickMenu();
+            }
+        }
         const installedSkills = ref([]);
+        const filteredInstalledSkills = ref([]);
+        const installedSearchQuery = ref('');
         const skillsTab = ref('mine');
         const marketQuery = ref('');
         const marketResults = ref([]);
@@ -233,14 +283,15 @@ const app = createApp({
         const showToolDetails = ref(false);
         const pinnedTaskIds = ref(JSON.parse(localStorage.getItem('hermes_pinned_tasks') || '[]'));
         const employees = ref([]);
+        const employeeListExpanded = ref(true);
         const activeEmployeeId = ref('');
         const editingEmployee = ref({});
         const currentEmployee = ref(null);
         const isEmployeeChatting = ref(false);
         const showNewEmployeeDialog = ref(false);
         const showEditEmployeeDialog = ref(false);
-        const newEmployee = ref({ name: '', emoji: '😊', role: '', personality: '', goal: '', work_content: '', work_steps: '', self_growth: '', notes: '', work_mode: 'manual' });
-        const editEmployeeForm = ref({ name: '', emoji: '', role: '', personality: '', goal: '', work_content: '', work_steps: '', self_growth: '', notes: '', work_mode: 'manual' });
+        const newEmployee = ref({ name: '', emoji: '😊', role: '', work_dir: '', personality: '', goal: '', work_content: '', work_steps: '', self_growth: '', notes: '', work_mode: 'manual' });
+        const editEmployeeForm = ref({ name: '', emoji: '', role: '', work_dir: '', personality: '', goal: '', work_content: '', work_steps: '', self_growth: '', notes: '', work_mode: 'manual' });
         const editEmployeeFiles = ref([]);
         const editLearnDepth = ref('deep');
         const isLearning = ref(false);
@@ -263,6 +314,7 @@ const app = createApp({
         const activeEmployeeTask = ref(null);
         const isConfirmingEmployeeTask = ref(false);
         const empContextMenu = ref({ visible: false, x: 0, y: 0, emp: null });
+        const skillContextMenu = ref({ visible: false, x: 0, y: 0, skill: null });
         const showEmojiPicker = ref(false);
         const showEditEmojiPicker = ref(false);
         const emojiOptions = ['👩‍💼','👨‍💼','👩‍💻','👨‍💻','👩‍🎨','👨‍🎨','👩‍🔬','👨‍🔬','👩‍🏫','👨‍🏫','👩‍🍳','👨‍🍳','👩‍🔧','👨‍🔧','👩‍🎓','👨‍🎓','👩‍🚀','👨‍🚀','👩‍🚒','👨‍🚒','👩‍✈️','👨‍✈️','👩‍🎤','👨‍🎤','👩‍🏭','👨‍🏭','👩‍🌾','👨‍🌾','🕵️‍♀️','🕵️‍♂️','👷‍♀️','👷‍♂️','💂‍♀️','💂‍♂️','🤴','👸','🦸‍♀️','🦸‍♂️','🦹‍♀️','🦹‍♂️','🧙‍♀️','🧙‍♂️','🧝‍♀️','🧝‍♂️','🧚‍♀️','🧚‍♂️','🧛‍♀️','🧛‍♂️','🧜‍♀️','🧜‍♂️','👼','👶','👧','🧒','👦','👩','🧑','👨','👩‍🦰','👨‍🦰','👱‍♀️','👱‍♂️','👩‍🦳','👨‍🦳','👩‍🦲','👨‍🦲','🧔','👴','👵','🧓','🤖','👻','👽','🎅','🤶','😊','🤓'];
@@ -572,6 +624,97 @@ const app = createApp({
             await loadVersionSnapshots();
         }
 
+        async function syncPromptsToConsole() {
+            if (promptSyncBusy.value) return;
+            promptSyncBusy.value = true;
+            try {
+                const resp = await fetchWithTimeout('/api/prompts/sync-to-console', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                }, 120000);
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.detail || 'Sync failed');
+                const msg = data.synced !== undefined
+                    ? `同步完成：发送 ${data.synced} 条，跳过 ${data.skipped || 0} 条`
+                    : (data.message || '同步成功');
+                alert(msg);
+            } catch (e) {
+                alert('同步失败：' + (e.message || e));
+            } finally {
+                promptSyncBusy.value = false;
+            }
+        }
+
+        function openWorkDirDialog() {
+            workDirDraft.value = config.value.global_work_dir || '';
+            showWorkDirDialog.value = true;
+            showSettings.value = false;
+        }
+
+        async function chooseFolderPath() {
+            const resp = await fetch('/api/workspace/choose-folder', { method: 'POST' });
+            const data = await resp.json();
+            if (!data.ok) throw new Error(data.error || '无法打开文件夹选择窗口');
+            return data.path || '';
+        }
+
+        async function chooseGlobalWorkDir() {
+            try {
+                const path = await chooseFolderPath();
+                if (path) workDirDraft.value = path;
+            } catch (e) {
+                alert('选择失败：' + (e.message || '未知错误'));
+            }
+        }
+
+        async function saveGlobalWorkDir() {
+            const trimmed = (workDirDraft.value || '').trim();
+            try {
+                workDirBusy.value = true;
+                const resp = await fetch('/api/workspace', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ work_dir: trimmed, create: true }),
+                });
+                const data = await resp.json();
+                if (!data.ok) {
+                    alert('保存失败：' + (data.error || '未知错误'));
+                    return;
+                }
+                config.value.global_work_dir = data.global_work_dir || '';
+                showWorkDirDialog.value = false;
+            } catch (e) {
+                alert('保存失败：' + (e.message || '网络错误'));
+            } finally {
+                workDirBusy.value = false;
+            }
+        }
+
+        async function openGlobalWorkDir() {
+            try {
+                const resp = await fetch('/api/workspace/open', { method: 'POST' });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    alert(data.detail || '无法打开工作目录');
+                }
+            } catch (e) {
+                alert('无法打开工作目录：' + (e.message || '网络错误'));
+            }
+        }
+
+        async function chooseEmployeeWorkDir(target) {
+            try {
+                const path = await chooseFolderPath();
+                if (!path) return;
+                if (target === 'edit') {
+                    editEmployeeForm.value.work_dir = path;
+                } else {
+                    newEmployee.value.work_dir = path;
+                }
+            } catch (e) {
+                alert('选择失败：' + (e.message || '未知错误'));
+            }
+        }
+
         async function createVersionSnapshot() {
             versionBusy.value = true;
             try {
@@ -783,6 +926,185 @@ const app = createApp({
             _insideThink = false;
         }
 
+        const TOOL_DISPLAY_NAMES = {
+            terminal: '本地命令',
+            shell: '本地命令',
+            cmd: '本地命令',
+            powershell: '本地命令',
+            execute_code: '执行代码',
+            python: '执行 Python',
+            patch: '修改文件',
+            apply_patch: '修改文件',
+            read_file: '读取文件',
+            write_file: '写入文件',
+            edit_file: '编辑文件',
+            delete_file: '删除文件',
+            remove_file: '删除文件',
+            move_file: '移动文件',
+            copy_file: '复制文件',
+            list_files: '列出文件',
+            search_files: '搜索文件',
+            grep: '搜索文本',
+            browser: '浏览器操作',
+            browser_navigate: '打开网页',
+            browser_click: '点击网页',
+            browser_type: '网页输入',
+            browser_screenshot: '网页截图',
+            web_search: '搜索网络',
+            fetch: '读取网络内容',
+            screenshot: '截图',
+            vision: '视觉识别',
+            vision_analyze: '分析图片',
+            image_generate: '生成图片',
+            image_generation: '生成图片',
+            video_generate: '生成视频',
+            video_generation: '生成视频',
+            image_edit: '编辑图片',
+            photoshop: 'Photoshop 操作',
+            computer_use: '电脑操作',
+            mouse: '鼠标操作',
+            keyboard: '键盘操作',
+            hotkey: '快捷键操作',
+            skill: '技能操作',
+            load_skill: '加载技能',
+            install_skill: '安装技能',
+            list_skills: '列出技能',
+            open_file: '打开文件',
+            open_folder: '打开文件夹',
+            tool: '工具'
+        };
+
+        const TOOL_STATUS_NAMES = {
+            'tool.start': '开始执行',
+            'tool.started': '开始执行',
+            started: '开始执行',
+            start: '开始执行',
+            running: '执行中',
+            progress: '执行中',
+            'tool.complete': '执行完成',
+            'tool.completed': '执行完成',
+            complete: '执行完成',
+            completed: '执行完成',
+            done: '执行完成',
+            success: '执行成功',
+            ok: '执行成功',
+            failed: '执行失败',
+            failure: '执行失败',
+            error: '执行失败',
+            timeout: '执行超时',
+            cancelled: '已取消',
+            canceled: '已取消',
+            interrupted: '已停止'
+        };
+
+        const ACTIVITY_LABEL_NAMES = {
+            starting: '准备中',
+            working: '处理中',
+            status: '状态更新',
+            'model output': '智能体正在回复'
+        };
+
+        function normalizeToolKey(name) {
+            return String(name || 'tool').trim().toLowerCase().replace(/[\s.-]+/g, '_');
+        }
+
+        function toolDisplayName(name) {
+            const raw = String(name || '').trim();
+            if (!raw) return '工具';
+            const key = normalizeToolKey(raw);
+            return TOOL_DISPLAY_NAMES[key] || raw;
+        }
+
+        function toolStatusName(status) {
+            const raw = String(status || '').trim();
+            if (!raw) return '';
+            const key = raw.toLowerCase();
+            return TOOL_STATUS_NAMES[key] || TOOL_STATUS_NAMES[key.replace(/[\s_]+/g, '.')] || raw;
+        }
+
+        function isLikelyGarbledText(text) {
+            const s = String(text || '');
+            if (!s) return false;
+            if (s.includes('\uFFFD') || s.includes('锟') || s.includes('�')) return true;
+            const suspicious = (s.match(/[ÃÂÐÑ]/g) || []).length;
+            return suspicious >= 3;
+        }
+
+        function cleanToolDetail(detail) {
+            let s = String(detail || '').replace(/\r/g, '').trim();
+            if (!s || isLikelyGarbledText(s)) return '';
+            const lines = s.split('\n').map(line => line.trim()).filter(Boolean);
+            if (lines.length) s = lines[lines.length - 1];
+            if (isLikelyGarbledText(s)) return '';
+            if (s.length > 120) s = s.slice(0, 117) + '...';
+            return s;
+        }
+
+        function translateActivityLabel(label) {
+            const raw = String(label || '').trim();
+            if (!raw) return '处理中';
+            if (ACTIVITY_LABEL_NAMES[raw]) return ACTIVITY_LABEL_NAMES[raw];
+            const parts = raw.split(/\s+/);
+            if (parts.length >= 2) {
+                const name = toolDisplayName(parts[0]);
+                const status = toolStatusName(parts.slice(1).join(' '));
+                return status ? `${name}${status}` : name;
+            }
+            return toolDisplayName(raw);
+        }
+
+        function formatToolProgress(data) {
+            const label = toolDisplayName(data.name || data.tool || data.tool_name || 'tool');
+            const event = String(data.event || '').trim();
+            const status = toolStatusName(data.status || event);
+            const detail = cleanToolDetail(data.detail || data.summary || '');
+            const eventKey = event.toLowerCase();
+            const statusKey = String(data.status || '').toLowerCase();
+            let text;
+            if (eventKey.includes('start') || statusKey === 'started' || statusKey === 'start') {
+                text = `正在执行：${label}`;
+            } else if (eventKey.includes('complete') || ['complete', 'completed', 'done', 'success', 'ok'].includes(statusKey)) {
+                text = `执行完成：${label}`;
+            } else if (eventKey.includes('fail') || eventKey.includes('error') || ['failed', 'failure', 'error', 'timeout'].includes(statusKey)) {
+                text = `执行失败：${label}`;
+            } else {
+                text = status ? `${label}：${status}` : `正在执行：${label}`;
+            }
+            return detail ? `${text}（${detail}）` : text;
+        }
+
+        function formatStatusProgress(data) {
+            const kind = String(data.kind || '').trim();
+            const text = String(data.text || '').trim();
+            if (text === 'thinking') return '正在请求大模型...';
+            if (text === 'interrupting') return '正在停止...';
+            if (text === 'Initializing agent...') return '正在初始化智能体...';
+            if (kind === 'heartbeat') {
+                const elapsed = Number(data.elapsed || 0);
+                const activity = translateActivityLabel(data.activity || data.label || data.last_activity || '');
+                return elapsed > 0 ? `仍在处理，已等待 ${elapsed} 秒：${activity}` : translateHeartbeatText(text);
+            }
+            if (kind === 'slow') return text || '这轮等待较久，仍在继续处理。';
+            return '';
+        }
+
+        function translateHeartbeatText(text) {
+            let s = String(text || '').trim();
+            if (!s) return '';
+            s = s.replace('model output', '智能体正在回复');
+            s = s.replace('starting', '准备中');
+            s = s.replace('working', '处理中');
+            return cleanToolDetail(s) || s;
+        }
+
+        function appendToolProgress(text) {
+            if (!text) return;
+            const last = messages.value[messages.value.length - 1];
+            if (!last || last.role !== 'tool' || last.content !== escapeHtml(text)) {
+                addMessage('tool', text);
+            }
+        }
+
         function handleWsMessage(data) {
             switch (data.type) {
                 case 'delta': {
@@ -794,15 +1116,8 @@ const app = createApp({
                 }
 
                 case 'tool': {
-                    const name = data.name || '工具';
                     const event = data.event || '';
-                    const status = data.status || event;
-                    const detail = data.detail ? ': ' + data.detail : '';
-                    const toolMsg = `[Tool] ${name}: ${status}${detail}`;
-                    const last = messages.value[messages.value.length - 1];
-                    if (!last || last.role !== 'tool' || last.content !== escapeHtml(toolMsg)) {
-                        addMessage('tool', toolMsg);
-                    }
+                    appendToolProgress(formatToolProgress(data));
 
                     if (event === 'tool.start') {
                         // Tool events belong in the collapsible detail area. Do not clear
@@ -814,6 +1129,7 @@ const app = createApp({
                 }
 
                 case 'status':
+                    appendToolProgress(formatStatusProgress(data));
                     if (data.text === 'thinking') {
                         isThinking.value = true;
                         // Only clear streamingText on first thinking signal, not mid-stream
@@ -931,7 +1247,9 @@ const app = createApp({
             let msgText = text;
             if (uploadedFiles.value.length > 0) {
                 const fileLines = uploadedFiles.value.map(function(f) {
-                    return '- ' + f.filename + ' (' + f.path + ')';
+                    const asset = f.asset_id ? ' asset_id=' + f.asset_id : '';
+                    const type = f.type ? ' type=' + f.type : '';
+                    return '- ' + f.filename + asset + type + ' (' + f.path + ')';
                 }).join('\n');
                 msgText = [
                     text.trim(),
@@ -1194,10 +1512,120 @@ const app = createApp({
             }
         }
 
+        async function switchToCollabAgents() {
+            activeView.value = 'collabAgents';
+            await loadCollabAgents();
+        }
+
+        async function loadCollabAgents() {
+            collabLoading.value = true;
+            try {
+                const resp = await fetch('/api/collab-agents');
+                const data = await resp.json();
+                collabAgents.value = data.agents || [];
+            } catch (e) {
+                console.error('Load collab agents error:', e);
+                collabAgents.value = [];
+            } finally {
+                collabLoading.value = false;
+            }
+        }
+
+        function collabTypeLabel(type) {
+            const t = (type || '').toLowerCase();
+            if (t === 'resident') return 'Resident';
+            if (t === 'coze') return 'Coze';
+            if (t === 'http') return 'HTTP';
+            return type || '未知';
+        }
+
+        function collabStatusLabel(agent) {
+            if (!agent || !agent.last_status) return '未测试';
+            if (agent.last_status === 'online') return '可连接';
+            if (agent.last_status === 'error') return '连接失败';
+            return agent.last_status;
+        }
+
+        function openNewCollabAgent() {
+            collabForm.value = { id: '', name: '', type: 'resident', endpoint: '', token: '', notes: '' };
+            showCollabDialog.value = true;
+        }
+
+        function editCollabAgent(agent) {
+            collabForm.value = {
+                id: agent.id || '',
+                name: agent.name || '',
+                type: agent.type || 'resident',
+                endpoint: agent.endpoint || '',
+                token: '',
+                notes: agent.notes || '',
+            };
+            showCollabDialog.value = true;
+        }
+
+        async function saveCollabAgent() {
+            if (!collabForm.value.name.trim()) {
+                alert('请填写智能体名称');
+                return;
+            }
+            if (!collabForm.value.endpoint.trim()) {
+                alert('请填写连接地址');
+                return;
+            }
+            try {
+                const resp = await fetch('/api/collab-agents', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(collabForm.value),
+                });
+                const data = await resp.json();
+                if (!resp.ok || !data.ok) throw new Error(data.detail || data.error || '保存失败');
+                showCollabDialog.value = false;
+                await loadCollabAgents();
+            } catch (e) {
+                alert('保存失败：' + (e.message || '网络错误'));
+            }
+        }
+
+        async function deleteCollabAgent(agent) {
+            if (!agent || !agent.id) return;
+            if (!confirm('确定删除「' + (agent.name || '这个智能体') + '」吗？')) return;
+            try {
+                const resp = await fetch('/api/collab-agents/' + encodeURIComponent(agent.id), { method: 'DELETE' });
+                if (!resp.ok) {
+                    const data = await resp.json().catch(() => ({}));
+                    throw new Error(data.detail || data.error || '删除失败');
+                }
+                await loadCollabAgents();
+            } catch (e) {
+                alert('删除失败：' + (e.message || '网络错误'));
+            }
+        }
+
+        async function testCollabAgent(agent) {
+            if (!agent || !agent.id) return;
+            collabTestingId.value = agent.id;
+            try {
+                const resp = await fetch('/api/collab-agents/' + encodeURIComponent(agent.id) + '/test', { method: 'POST' });
+                const data = await resp.json();
+                if (data.agent) {
+                    const idx = collabAgents.value.findIndex(a => a.id === agent.id);
+                    if (idx >= 0) collabAgents.value[idx] = data.agent;
+                }
+                if (!data.ok) throw new Error(data.error || data.detail || '连接失败');
+            } catch (e) {
+                alert('测试失败：' + (e.message || '网络错误'));
+                await loadCollabAgents();
+            } finally {
+                collabTestingId.value = '';
+            }
+        }
+
         async function switchToSkills() {
             activeView.value = 'skills';
             skillsTab.value = 'mine';
             skillDetailName.value = '';
+            installedSearchQuery.value = '';
             await loadInstalledSkills();
         }
 
@@ -1206,8 +1634,22 @@ const app = createApp({
                 const resp = await fetch('/api/skills');
                 const data = await resp.json();
                 installedSkills.value = data.skills || [];
+                filterInstalledSkills();
             } catch (e) {
                 console.error('Load skills error:', e);
+            }
+        }
+
+        function filterInstalledSkills() {
+            const q = (installedSearchQuery.value || '').toLowerCase().trim();
+            if (!q) {
+                filteredInstalledSkills.value = installedSkills.value;
+            } else {
+                filteredInstalledSkills.value = installedSkills.value.filter(s =>
+                    (s.name || '').toLowerCase().includes(q) ||
+                    (s.description || '').toLowerCase().includes(q) ||
+                    (s.category || '').toLowerCase().includes(q)
+                );
             }
         }
 
@@ -1336,8 +1778,16 @@ const app = createApp({
             return true;
         }
 
+        function toggleEmployeeList(e) {
+            if (e && typeof e.preventDefault === 'function') e.preventDefault();
+            const alreadyInTeamView = activeView.value === 'team';
+            activeView.value = 'team';
+            employeeListExpanded.value = alreadyInTeamView ? !employeeListExpanded.value : true;
+        }
+
         async function switchToTeam() {
             activeView.value = 'team';
+            employeeListExpanded.value = true;
             currentEmployee.value = null;
             isEmployeeChatting.value = false;
             employeeTasks.value = [];
@@ -1401,7 +1851,7 @@ const app = createApp({
                 const data = await resp.json();
                 if (data.ok) {
                     showNewEmployeeDialog.value = false;
-                    newEmployee.value = { name: '', emoji: '😊', role: '', personality: '', goal: '', work_content: '', work_steps: '', self_growth: '', notes: '', work_mode: 'manual' };
+                    newEmployee.value = { name: '', emoji: '😊', role: '', work_dir: '', personality: '', goal: '', work_content: '', work_steps: '', self_growth: '', notes: '', work_mode: 'manual' };
                     await loadEmployees();
                 } else {
                     alert('创建失败：' + (data.error || '未知错误'));
@@ -1417,6 +1867,7 @@ const app = createApp({
                 name: emp.name || '',
                 emoji: emp.emoji || '😊',
                 role: emp.role || '',
+                work_dir: emp.work_dir || '',
                 personality: emp.personality || '',
                 goal: emp.goal || '',
                 work_content: emp.work_content || '',
@@ -1985,7 +2436,36 @@ const app = createApp({
         }
 
         // ===== Employee context menu =====
+        function showSkillContextMenu(e, skill) {
+            if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+            hideRightClickMenu();
+            hideEmpContextMenu();
+            skillContextMenu.value = { visible: true, x: e.clientX, y: e.clientY, skill: skill };
+        }
+
+        function hideSkillContextMenu() {
+            skillContextMenu.value = { visible: false, x: 0, y: 0, skill: null };
+        }
+
+        async function deleteSkillFromMenu(skill) {
+            hideSkillContextMenu();
+            const name = skill.name || skill;
+            if (!confirm(`确定要删除技能 "${name}" 吗？此操作不可恢复。`)) return;
+            try {
+                const resp = await fetch('/api/skills/' + encodeURIComponent(name), { method: 'DELETE' });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.detail || '删除失败');
+                alert(data.message || '已删除');
+                await loadInstalledSkills();
+            } catch (e) {
+                alert('删除失败：' + (e.message || e));
+            }
+        }
+
         function showEmpContextMenu(e, emp) {
+            if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+            hideRightClickMenu();
+            hideSkillContextMenu();
             empContextMenu.value = { visible: true, x: e.clientX, y: e.clientY, emp: emp };
         }
 
@@ -2329,9 +2809,19 @@ const app = createApp({
                 const data = await resp.json();
                 if (data.ok && sid === currentSessionId.value) {
                     const wasThinking = isThinking.value || !!streamingText.value;
+                    const activeSocket = wsBySession[sid];
+                    const activeSocketOpen = activeWsSession === sid && activeSocket && activeSocket.readyState === WebSocket.OPEN;
                     isThinking.value = !!data.running;
                     if (!data.running) {
                         isStoppingResponse.value = false;
+                        // Do not let the polling status endpoint erase an active
+                        // streaming answer. The websocket done/error event owns
+                        // final commit; polling can briefly observe running=false
+                        // before that event is processed.
+                        if (wasThinking && activeSocketOpen && streamingText.value.trim()) {
+                            isThinking.value = true;
+                            return;
+                        }
                         clearStreamingState();
                         if (wasThinking) {
                             delete sessionMessagesCache[sid];
@@ -2493,12 +2983,29 @@ const app = createApp({
             try {
                 document.addEventListener('click', hideContextMenu);
                 document.addEventListener('click', hideRightClickMenu);
-                // Right-click on message bubbles: show custom copy menu
+                document.addEventListener('click', hideSkillContextMenu);
+                document.addEventListener('click', hideEmpContextMenu);
+                document.addEventListener('keydown', function(e) {
+                    if (e.key === 'Escape') {
+                        hideSkillContextMenu();
+                        hideEmpContextMenu();
+                        hideRightClickMenu();
+                    }
+                });
+                // Right-click on a message row or bubble: show copy/delete menu.
                 document.addEventListener('contextmenu', function(e) {
+                    const skillCard = e.target && e.target.closest ? e.target.closest('.skill-card') : null;
+                    const employeeItem = e.target && e.target.closest ? e.target.closest('.sidebar-employee-item') : null;
+                    if (!skillCard) hideSkillContextMenu();
+                    if (!employeeItem) hideEmpContextMenu();
                     var target = e.target;
                     var isMsg = false;
                     while (target && target !== document.body) {
                         if (target.classList && (target.classList.contains('message') ||
+                            target.classList.contains('msg-row') ||
+                            target.classList.contains('msg-body') ||
+                            target.classList.contains('media-bundle') ||
+                            target.classList.contains('media-card') ||
                             target.classList.contains('msg-actions') ||
                             target.tagName === 'PRE' ||
                             target.tagName === 'CODE')) {
@@ -2510,12 +3017,18 @@ const app = createApp({
                     if (isMsg) {
                         e.preventDefault();
                         e.stopImmediatePropagation();
+                        var eventTarget = e.target && e.target.nodeType === 3 ? e.target.parentElement : e.target;
                         var sel = window.getSelection();
                         var selectedText = sel ? sel.toString().trim() : '';
-                        // Find the closest message element for full-text fallback
-                        var msgEl = e.target.closest('.message');
-                        var fullText = msgEl ? msgEl.innerText.trim() : '';
-                        showRightClickMenu(e, selectedText, fullText);
+                        var rowEl = eventTarget && eventTarget.closest ? eventTarget.closest('.msg-row') : null;
+                        var msgEl = eventTarget && eventTarget.closest ? (eventTarget.closest('.message') || rowEl) : rowEl;
+                        var idEl = eventTarget && eventTarget.closest ? eventTarget.closest('[data-message-id]') : null;
+                        var fullText = (rowEl || msgEl) ? (rowEl || msgEl).innerText.trim() : '';
+                        var messageId = '';
+                        if (idEl) messageId = idEl.getAttribute('data-message-id') || '';
+                        if (!messageId && rowEl) messageId = rowEl.getAttribute('data-message-id') || '';
+                        if (!messageId && msgEl) messageId = msgEl.getAttribute('data-message-id') || '';
+                        showRightClickMenu(e, selectedText, fullText, messageId);
                     }
                 }, true);
                 await loadConfig();
@@ -2607,6 +3120,16 @@ const app = createApp({
             showLog,
             serverLogs,
             showSettings,
+            promptSyncBusy,
+            syncPromptsToConsole,
+            showWorkDirDialog,
+            workDirDraft,
+            workDirBusy,
+            openWorkDirDialog,
+            chooseGlobalWorkDir,
+            saveGlobalWorkDir,
+            openGlobalWorkDir,
+            chooseEmployeeWorkDir,
             showVersionDialog,
             versionSnapshots,
             versionBusy,
@@ -2624,12 +3147,30 @@ const app = createApp({
             hideRightClickMenu,
             copySelected,
             copyAll,
+            deleteMessageFromMenu,
             activeView,
             sessionListCollapsed,
             sidebarCollapsed,
             toggleSidebar,
             toggleSessionList,
+            collabAgents,
+            collabLoading,
+            collabTestingId,
+            showCollabDialog,
+            collabForm,
+            switchToCollabAgents,
+            loadCollabAgents,
+            collabTypeLabel,
+            collabStatusLabel,
+            openNewCollabAgent,
+            editCollabAgent,
+            saveCollabAgent,
+            deleteCollabAgent,
+            testCollabAgent,
             installedSkills,
+            filteredInstalledSkills,
+            installedSearchQuery,
+            filterInstalledSkills,
             skillsTab,
             marketQuery,
             marketResults,
@@ -2731,6 +3272,12 @@ const app = createApp({
             isConfirmingEmployeeTask,
             selectedEmployeeWorkflow,
             empContextMenu,
+            skillContextMenu,
+            showSkillContextMenu,
+            hideSkillContextMenu,
+            deleteSkillFromMenu,
+            employeeListExpanded,
+            toggleEmployeeList,
             loadEmployees,
             switchToTeam,
             chatWithEmployee,

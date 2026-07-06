@@ -181,12 +181,24 @@ def _write_llm_prompt_snapshot(
     approx_tokens: int,
     approx_request_tokens: int,
     total_chars: int,
+    # ── Response fields (populated when called after API response) ─────
+    response_content: str = None,
+    response_tool_calls: list = None,
+    response_finish_reason: str = None,
+    response_usage: dict = None,
+    response_model: str = None,
+    response_duration_ms: float = None,
 ) -> None:
-    """Persist the exact LLM request shape for local desktop debugging.
+    """Persist the exact LLM request+response for local desktop debugging.
+
+    Called twice per API call:
+    1. Before the API call  — writes a request-only snapshot.
+    2. After the API call   — writes a combined request+response snapshot
+       (overwrites the request-only file so the final artifact is complete).
 
     This is intentionally local-only and best-effort.  It lets us inspect what
-    the model actually saw when it refused to call tools or hallucinated an
-    execution result.
+    the model actually saw and replied when it refused to call tools or
+    hallucinated an execution result.
     """
     enabled = env_var_enabled("HERMES_DUMP_LLM_PROMPT") or (
         getattr(agent, "platform", None) == "desktop"
@@ -199,8 +211,21 @@ def _write_llm_prompt_snapshot(
         hermes_home = Path(os.environ.get("HERMES_HOME") or Path.cwd())
         out_dir = hermes_home / "logs" / "llm_prompt_snapshots"
         out_dir.mkdir(parents=True, exist_ok=True)
-        ts = time.strftime("%Y%m%d_%H%M%S")
         sid = str(getattr(agent, "session_id", "") or "no_session")[:16]
+        # Reuse timestamp from the pre-call write so the richer post-call
+        # snapshot overwrites the same file.  Use a single dict on the agent
+        # instead of N ephemeral attributes.
+        _cache = getattr(agent, "_snapshot_ts_cache", None)
+        if _cache is None:
+            _cache = {}
+            try:
+                agent._snapshot_ts_cache = _cache
+            except Exception:
+                pass
+        ts = _cache.get(api_call_count)
+        if ts is None:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            _cache[api_call_count] = ts
         path = out_dir / f"{ts}_{sid}_call{api_call_count}.json"
 
         request_messages = api_kwargs.get("messages")
@@ -212,6 +237,8 @@ def _write_llm_prompt_snapshot(
         request_tools = api_kwargs.get("tools")
         if request_tools is None:
             request_tools = getattr(agent, "tools", None) or []
+
+        has_response = response_content is not None or response_tool_calls is not None
 
         snapshot = {
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -231,6 +258,7 @@ def _write_llm_prompt_snapshot(
             "tool_count": len(request_tools or []),
             "tool_names": [_tool_schema_name(tool) for tool in (request_tools or [])],
             "api_kwargs_keys": sorted(str(k) for k in api_kwargs.keys()),
+            # ── Request ──
             "messages": request_messages,
             "tools": request_tools,
             "api_kwargs": {
@@ -238,13 +266,23 @@ def _write_llm_prompt_snapshot(
                 for k, v in api_kwargs.items()
                 if k not in {"messages", "input", "tools"}
             },
+            # ── Response (only in post-call write) ──
+            "response": {
+                "content": response_content,
+                "tool_calls": response_tool_calls or [],
+                "finish_reason": response_finish_reason,
+                "usage": response_usage,
+                "model": response_model,
+                "duration_ms": response_duration_ms,
+            } if has_response else None,
         }
         safe_snapshot = _redact_prompt_snapshot_value(snapshot)
         path.write_text(
             json.dumps(safe_snapshot, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        logger.info("LLM prompt snapshot written: %s", path)
+        tag = "request+response" if has_response else "request"
+        logger.info("LLM prompt snapshot (%s) written: %s", tag, path)
     except Exception as exc:
         logger.warning("Failed to write LLM prompt snapshot: %s", exc)
 
@@ -3274,6 +3312,7 @@ def run_conversation(
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
                 _assistant_text = assistant_message.content or ""
+                _resp_usage = agent._usage_summary_for_api_request_hook(response)
                 _invoke_hook(
                     "post_api_request",
                     task_id=effective_task_id,
@@ -3289,13 +3328,55 @@ def run_conversation(
                     message_count=len(api_messages),
                     response_model=getattr(response, "model", None),
                     response=response,
-                    usage=agent._usage_summary_for_api_request_hook(response),
+                    usage=_resp_usage,
                     assistant_message=assistant_message,
                     assistant_content_chars=len(_assistant_text),
                     assistant_tool_call_count=len(_assistant_tool_calls),
                 )
             except Exception:
                 pass
+
+            # ── Write complete request+response snapshot ──────────────
+            _serialized_tool_calls = []
+            for _tc in _assistant_tool_calls:
+                try:
+                    _tc_id = getattr(_tc, "id", "") if hasattr(_tc, "id") else _tc.get("id", "")
+                    _tc_type = getattr(_tc, "type", "function") if hasattr(_tc, "type") else _tc.get("type", "function")
+                    _tc_fn = getattr(_tc, "function", None)
+                    if _tc_fn is not None:
+                        _tc_name = getattr(_tc_fn, "name", "") if hasattr(_tc_fn, "name") else _tc_fn.get("name", "")
+                        _tc_args = getattr(_tc_fn, "arguments", "") if hasattr(_tc_fn, "arguments") else _tc_fn.get("arguments", "")
+                    else:
+                        _tc_name = ""
+                        _tc_args = ""
+                    _serialized_tool_calls.append({
+                        "id": str(_tc_id),
+                        "type": str(_tc_type),
+                        "function": {
+                            "name": str(_tc_name),
+                            "arguments": str(_tc_args),
+                        },
+                    })
+                except Exception:
+                    _serialized_tool_calls.append({"raw": str(_tc)})
+
+            _write_llm_prompt_snapshot(
+                agent,
+                api_kwargs=api_kwargs,
+                api_messages=api_messages,
+                messages=messages,
+                original_user_message=original_user_message,
+                api_call_count=api_call_count,
+                approx_tokens=approx_tokens,
+                approx_request_tokens=approx_request_tokens,
+                total_chars=total_chars,
+                response_content=_assistant_text,
+                response_tool_calls=_serialized_tool_calls,
+                response_finish_reason=finish_reason,
+                response_usage=_resp_usage,
+                response_model=getattr(response, "model", None),
+                response_duration_ms=round(api_duration * 1000),
+            )
 
             # Handle assistant response
             if assistant_message.content and not agent.quiet_mode:

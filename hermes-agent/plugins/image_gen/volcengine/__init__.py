@@ -12,7 +12,7 @@ from agent.image_gen_provider import (
 
 logger = logging.getLogger(__name__)
 
-API_BASE = "https://ark.cn-beijing.volces.com/api/plan/v3"
+API_BASE_DEFAULT = "https://ark.cn-beijing.volces.com/api/plan/v3"
 
 _MODELS: Dict[str, Dict[str, Any]] = {
     "doubao-seedream-5.0-lite": {
@@ -36,6 +36,22 @@ def _load_config() -> Dict[str, Any]:
         return {}
 
 
+def _resolve_api_base() -> str:
+    """Read base_url from image_gen config, fallback to main model config, then default."""
+    cfg = _load_config()
+    volc = cfg.get("volcengine") if isinstance(cfg.get("volcengine"), dict) else {}
+    url = volc.get("base_url") or cfg.get("base_url")
+    if url: return str(url).rstrip("/")
+    try:
+        from hermes_cli.config import load_config as lc
+        main = lc()
+        main_url = (main.get("model") or {}).get("base_url", "")
+        if main_url: return str(main_url).rstrip("/")
+    except Exception:
+        pass
+    return API_BASE_DEFAULT
+
+
 def _resolve_api_key() -> str:
     cfg = _load_config()
     volc = cfg.get("volcengine") if isinstance(cfg.get("volcengine"), dict) else {}
@@ -44,11 +60,10 @@ def _resolve_api_key() -> str:
     try:
         from hermes_cli.config import load_config as lc
         main = lc()
-        model_cfg = main.get("model") if isinstance(main, dict) else {}
         for cp in main.get("custom_providers") or []:
             if isinstance(cp, dict) and cp.get("api_key"):
                 return str(cp["api_key"])
-        return str(model_cfg.get("api_key", ""))
+        return str((main.get("model") or {}).get("api_key", ""))
     except Exception:
         return os.environ.get("ARK_API_KEY", "")
 
@@ -102,7 +117,7 @@ class VolcengineImageGenProvider(ImageGenProvider):
 
         try:
             from openai import OpenAI
-            client = OpenAI(base_url=API_BASE, api_key=api_key)
+            client = OpenAI(base_url=_resolve_api_base(), api_key=api_key)
             response = client.images.generate(model=model_id, prompt=prompt, size=size,
                                               n=1, response_format="b64_json")
         except Exception as exc:

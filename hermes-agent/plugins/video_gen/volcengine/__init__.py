@@ -16,8 +16,7 @@ from agent.video_gen_provider import (
 
 logger = logging.getLogger(__name__)
 
-API_BASE = "https://ark.cn-beijing.volces.com/api/plan/v3"
-TASKS_URL = f"{API_BASE}/contents/generations/tasks"
+API_BASE_DEFAULT = "https://ark.cn-beijing.volces.com/api/plan/v3"
 POLL_INTERVAL = 3.0
 POLL_TIMEOUT = 300
 
@@ -48,6 +47,22 @@ def _load_config() -> Dict[str, Any]:
         return sec if isinstance(sec, dict) else {}
     except Exception:
         return {}
+
+
+def _resolve_api_base() -> str:
+    """Read base_url from video_gen config, fallback to main model config, then default."""
+    cfg = _load_config()
+    volc = cfg.get("volcengine") if isinstance(cfg.get("volcengine"), dict) else {}
+    url = volc.get("base_url") or cfg.get("base_url")
+    if url: return str(url).rstrip("/")
+    try:
+        from hermes_cli.config import load_config as lc
+        main = lc()
+        main_url = (main.get("model") or {}).get("base_url", "")
+        if main_url: return str(main_url).rstrip("/")
+    except Exception:
+        pass
+    return API_BASE_DEFAULT
 
 
 def _resolve_api_key() -> str:
@@ -110,7 +125,7 @@ class VolcengineVideoGenProvider(VideoGenProvider):
     def generate(self, prompt: str, image_url: Optional[str] = None,
                  aspect_ratio: str = DEFAULT_ASPECT_RATIO,
                  duration: int = 10, resolution: str = DEFAULT_RESOLUTION,
-                 **kwargs: Any) -> Dict[str, Any]:
+                  **kwargs: Any) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         if not prompt:
             return error_response(error="Prompt is required", error_type="invalid_argument",
@@ -122,10 +137,23 @@ class VolcengineVideoGenProvider(VideoGenProvider):
 
         model_id, meta = _resolve_model()
         headers = _make_headers(api_key)
+        api_base = _resolve_api_base()
+        tasks_url = f"{api_base}/contents/generations/tasks"
         # 1. Create task (duration/ratio/resolution at top level)
         content: list = [{"type": "text", "text": prompt}]
+        image_input_count = 0
         if image_url:
             content.append({"type": "image_url", "image_url": {"url": image_url}})
+            image_input_count += 1
+        reference_image_urls = kwargs.get("reference_image_urls") or []
+        if isinstance(reference_image_urls, str):
+            reference_image_urls = [reference_image_urls]
+        if isinstance(reference_image_urls, (list, tuple)):
+            for ref_url in reference_image_urls:
+                ref_url = str(ref_url or "").strip()
+                if ref_url:
+                    content.append({"type": "image_url", "image_url": {"url": ref_url}})
+                    image_input_count += 1
         payload: Dict[str, Any] = {
             "model": model_id,
             "content": content,
@@ -135,7 +163,7 @@ class VolcengineVideoGenProvider(VideoGenProvider):
         }
 
         try:
-            r = httpx.post(TASKS_URL, json=payload, headers=headers, timeout=30)
+            r = httpx.post(tasks_url, json=payload, headers=headers, timeout=30)
             if r.status_code != 200:
                 return error_response(error=f"创建任务失败 HTTP {r.status_code}: {r.text[:200]}",
                                       error_type="api_error", provider="volcengine", model=model_id)
@@ -153,7 +181,7 @@ class VolcengineVideoGenProvider(VideoGenProvider):
         while time.time() < deadline:
             time.sleep(POLL_INTERVAL)
             try:
-                r2 = httpx.get(f"{TASKS_URL}/{task_id}", headers=headers, timeout=15)
+                r2 = httpx.get(f"{tasks_url}/{task_id}", headers=headers, timeout=15)
                 if r2.status_code != 200:
                     return error_response(error=f"查询任务失败 HTTP {r2.status_code}",
                                           error_type="api_error", provider="volcengine")
@@ -176,7 +204,12 @@ class VolcengineVideoGenProvider(VideoGenProvider):
                                               provider="volcengine", model=model_id)
                     return success_response(video=path, model=model_id, prompt=prompt,
                                             aspect_ratio=aspect_ratio, duration=duration,
-                                            provider="volcengine", extra={"resolution": resolution})
+                                            provider="volcengine",
+                                            modality="image" if image_input_count else "text",
+                                            extra={
+                                                "resolution": resolution,
+                                                "image_input_count": image_input_count,
+                                            })
                 elif status in ("failed", "error", "cancelled"):
                     return error_response(error=f"视频生成{status}: {task.get('error','')}",
                                           error_type="api_error", provider="volcengine")

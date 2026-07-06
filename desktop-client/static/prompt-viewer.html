@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hermes Prompt 日志查看器</title>
+<style>
+:root {
+  --bg: #faf3e8;
+  --card: #fffdf7;
+  --border: #e0d5c1;
+  --text: #3d3226;
+  --text2: #8b7e6a;
+  --accent: #c8a45a;
+  --green: #2d7a4b;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  padding: 20px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+h1 { font-size: 20px; margin-bottom: 4px; }
+.subtitle { font-size: 12px; color: var(--text2); margin-bottom: 14px; }
+.status-ok { color: var(--green); }
+.status-err { color: #c0392b; }
+
+.toolbar {
+  display: flex; gap: 10px; align-items: center; margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.toolbar input {
+  padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 13px; background: var(--card); width: 240px; outline: none;
+}
+.toolbar button {
+  padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; font-size: 12px; background: var(--card);
+}
+.toolbar button:hover { border-color: var(--accent); }
+
+table {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+  background: var(--card); border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--border);
+}
+th, td {
+  padding: 8px 12px; text-align: left; border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+th { background: rgba(200,180,155,0.15); font-weight: 600; color: var(--text2); font-size: 11px; }
+tr:hover { background: rgba(200,180,155,0.08); cursor: pointer; }
+tr.selected { background: rgba(200,164,90,0.15); }
+
+/* Detail overlay */
+.overlay {
+  display: none; position: fixed; top:0; left:0; right:0; bottom:0;
+  background: rgba(0,0,0,0.4); z-index: 100; overflow-y: auto;
+}
+.overlay.open { display: block; }
+.panel {
+  background: var(--bg); max-width: 1100px; margin: 30px auto; border-radius: 12px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.2); padding: 24px;
+}
+.panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.panel-header h2 { font-size: 16px; }
+.panel-close {
+  background: none; border: none; font-size: 20px; cursor: pointer; color: var(--text2);
+}
+
+.meta-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px; margin-bottom: 14px; }
+.meta-i { font-size: 12px; }
+.meta-k { color: var(--text2); }
+.meta-v { font-weight: 500; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 14px; }
+.tag { font-size: 11px; background: rgba(200,180,155,0.25); padding: 2px 8px; border-radius: 10px; font-family: monospace; }
+
+pre.code {
+  background: #1e1e1e; color: #d4d4d4; border-radius: 8px; padding: 16px;
+  font-size: 12px; line-height: 1.5; overflow: auto; max-height: 55vh;
+  white-space: pre-wrap; word-break: break-word;
+}
+pre.code.resp { background: #1a2e1a; color: #d4f5d4; max-height: 200px; }
+
+.resp-meta { font-size: 11px; color: var(--text2); margin-left: 8px; }
+.tc-block {
+  background: rgba(200,164,90,0.1); border: 1px solid rgba(200,164,90,0.2);
+  border-radius: 6px; padding: 8px 12px; margin-bottom: 6px;
+}
+.tc-name { font-size: 12px; font-weight: 600; color: var(--accent); }
+.tc-id { font-size: 10px; color: var(--text2); margin-left: 6px; }
+.tc-args { font-size: 11px; color: var(--text2); margin: 4px 0 0 0; white-space: pre-wrap; max-height: 150px; overflow: auto; }
+
+.empty { text-align: center; padding: 60px; color: var(--text2); }
+.error { color: #c0392b; padding: 12px; background: #fdedec; border-radius: 6px; margin: 10px 0; }
+.loading { text-align: center; padding: 20px; color: var(--text2); }
+
+@media (max-width: 768px) {
+  table { font-size: 11px; }
+  th, td { padding: 6px 8px; }
+}
+</style>
+</head>
+<body>
+
+<h1>🧠 LLM 全量对话日志</h1>
+<div class="subtitle">
+  每次发给大模型的完整 Prompt + 大模型回复 + 工具调用
+  · <span id="statusText">检测服务器...</span>
+</div>
+
+<div class="toolbar">
+  <input type="text" id="searchInput" placeholder="搜索用户消息或模型..." oninput="renderTable()">
+  <button onclick="loadData()">🔄 刷新</button>
+  <span style="font-size:11px;color:var(--text2);" id="filteredInfo"></span>
+</div>
+
+<div id="mainContent"><div class="loading">加载中...</div></div>
+
+<!-- Detail Modal -->
+<div class="overlay" id="overlay" onclick="if(event.target===this)closeDetail()">
+  <div class="panel" id="detailPanel"></div>
+</div>
+
+<script>
+// ── Server detection ───────────────────────────
+const SERVER = (() => {
+  if (location.protocol === 'file:') return 'http://127.0.0.1:8765';
+  return location.origin;
+})();
+
+let allFiles = [];
+let currentFile = null;
+
+async function loadData() {
+  const el = document.getElementById('mainContent');
+  const st = document.getElementById('statusText');
+  el.innerHTML = '<div class="loading">加载中...</div>';
+  st.textContent = '连接 ' + SERVER + ' ...';
+  st.className = '';
+  try {
+    const r = await fetch(SERVER + '/api/prompt-snapshots');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    allFiles = data.files || [];
+    const total = data.total || allFiles.length;
+    const shown = data.shown || allFiles.length;
+    st.textContent = '已连接 · 共 ' + total + ' 条' + (shown < total ? ' (显示最近 ' + shown + ' 条)' : '');
+    st.className = 'status-ok';
+    renderTable();
+  } catch (e) {
+    st.textContent = '连接失败: ' + e.message + '（请确认 Hermes 桌面端已启动）';
+    st.className = 'status-err';
+    el.innerHTML = '<div class="error">无法连接 Hermes 服务器: ' + e.message + '<br><br>请确认：<br>1. Hermes 桌面端已启动<br>2. 服务器地址: ' + SERVER + '</div>';
+  }
+}
+
+function renderTable() {
+  const q = (document.getElementById('searchInput').value || '').toLowerCase().trim();
+  let files = allFiles;
+  if (q) {
+    files = allFiles.filter(f =>
+      (f.original_user_message || '').toLowerCase().includes(q) ||
+      (f.model || '').toLowerCase().includes(q) ||
+      (f.session_id || '').toLowerCase().includes(q)
+    );
+  }
+  document.getElementById('filteredInfo').textContent =
+    q ? '筛选: ' + files.length + '/' + allFiles.length : '';
+
+  if (!files.length) {
+    document.getElementById('mainContent').innerHTML =
+      '<div class="empty">' + (q ? '没有匹配的记录' : '暂无 Prompt 日志，开始对话后自动记录') + '</div>';
+    return;
+  }
+
+  let html = '<table><thead><tr>';
+  const cols = ['时间', '用户消息', '模型', '调用#', 'Tokens', '消息数', '工具', '回复'];
+  for (const c of cols) html += '<th>' + c + '</th>';
+  html += '</tr></thead><tbody>';
+
+  for (const f of files) {
+    const sel = f.filename === currentFile ? ' selected' : '';
+    const hasResp = f.has_response ? ' ✅' : '';
+    html += '<tr class="' + sel + '" onclick="openDetail(\'' + escAttr(f.filename) + '\')">';
+    html += '<td>' + esc((f.created_at || '').substring(5)) + '</td>';
+    html += '<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;" title="' + escAttr(f.original_user_message || '') + '">' + esc((f.original_user_message || '').substring(0, 40)) + '</td>';
+    html += '<td>' + esc(f.model || '') + '</td>';
+    html += '<td>#' + f.api_call_count + '</td>';
+    html += '<td>' + (f.approx_tokens ? (f.approx_tokens/1000).toFixed(1) + 'k' : '-') + '</td>';
+    html += '<td>' + (f.wire_message_count || '-') + '</td>';
+    html += '<td>' + (f.tool_count || '-') + '</td>';
+    html += '<td>' + (f.has_response ? '✅ ' + (f.response_finish_reason || '') : '—') + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  document.getElementById('mainContent').innerHTML = html;
+}
+
+async function openDetail(filename) {
+  currentFile = filename;
+  renderTable();
+
+  const panel = document.getElementById('detailPanel');
+  panel.innerHTML = '<div class="loading">加载中...</div>';
+  document.getElementById('overlay').classList.add('open');
+
+  try {
+    const r = await fetch(SERVER + '/api/prompt-snapshots/' + encodeURIComponent(filename));
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const result = await r.json();
+    const d = result.data;
+    const msgs = d.messages || [];
+    const tools = d.tools || [];
+    const toolNames = d.tool_names && d.tool_names.length
+      ? d.tool_names
+      : tools.map(function(t) { return (t.function && t.function.name) || t.name || '?'; });
+    const resp = d.response || null;
+
+    let html = '<div class="panel-header">';
+    html += '<h2>📄 ' + esc(filename) + '</h2>';
+    html += '<button class="panel-close" onclick="closeDetail()">&times;</button>';
+    html += '</div>';
+
+    // Metadata
+    html += '<div class="meta-grid">';
+    var metaPairs = [
+      ['时间', d.created_at], ['会话', d.session_id],
+      ['模型', d.model], ['Provider', d.provider],
+      ['API 端点', d.base_url], ['API 模式', d.api_mode],
+      ['调用#', d.api_call_count], ['估算 Tokens', d.approx_tokens],
+      ['字符数', d.request_char_count], ['消息数', d.wire_message_count], ['工具数', d.tool_count],
+    ];
+    if (resp) {
+      metaPairs.push(['回复耗时', (resp.duration_ms ? (resp.duration_ms/1000).toFixed(1) + 's' : '')]);
+      metaPairs.push(['回复模型', resp.model || '']);
+      if (resp.usage) {
+        metaPairs.push(['输入 tokens', resp.usage.input_tokens || resp.usage.prompt_tokens || '']);
+        metaPairs.push(['输出 tokens', resp.usage.output_tokens || resp.usage.completion_tokens || '']);
+      }
+    }
+    for (var i = 0; i < metaPairs.length; i++) {
+      var k = metaPairs[i][0], v = metaPairs[i][1];
+      if (v !== undefined && v !== null && v !== '')
+        html += '<div class="meta-i"><span class="meta-k">' + esc(String(k)) + ':</span> <span class="meta-v">' + esc(String(v)) + '</span></div>';
+    }
+    html += '</div>';
+
+    // User message
+    html += '<div style="margin-bottom:12px;padding:10px;background:var(--card);border-radius:6px;border:1px solid var(--border);">';
+    html += '<strong style="font-size:12px;color:var(--text2);">💬 用户消息：</strong>';
+    html += '<span style="font-size:13px;">' + esc(d.original_user_message || '') + '</span></div>';
+
+    // Tool tags
+    if (toolNames.length) {
+      html += '<div class="tags">';
+      for (var ti = 0; ti < toolNames.length; ti++) html += '<span class="tag">' + esc(toolNames[ti]) + '</span>';
+      html += '</div>';
+    }
+
+    // ── REQUEST: Full Messages ──
+    html += '<h4 style="margin-bottom:6px;font-size:13px;">📤 发给 LLM 的完整 Prompt（' + msgs.length + ' 条消息）</h4>';
+    html += '<pre class="code">' + esc(JSON.stringify(msgs, null, 2)) + '</pre>';
+
+    // ── RESPONSE ──
+    if (resp) {
+      html += '<h4 style="margin:16px 0 6px 0;font-size:13px;color:var(--green);">';
+      html += '📥 LLM 回复';
+      html += '<span class="resp-meta">finish: ' + esc(resp.finish_reason || '?') + '</span>';
+      html += '<span class="resp-meta">model: ' + esc(resp.model || '?') + '</span>';
+      if (resp.duration_ms) html += '<span class="resp-meta">耗时: ' + (resp.duration_ms/1000).toFixed(1) + 's</span>';
+      html += '</h4>';
+
+      // Response text
+      html += '<pre class="code resp">' + esc(resp.content || '(无文本回复)') + '</pre>';
+
+      // Tool calls in response
+      if (resp.tool_calls && resp.tool_calls.length) {
+        html += '<div style="font-size:12px;color:var(--accent);margin:8px 0 4px;">🔧 LLM 请求调用了 ' + resp.tool_calls.length + ' 个工具：</div>';
+        for (var tci = 0; tci < resp.tool_calls.length; tci++) {
+          var tc = resp.tool_calls[tci];
+          var fn = tc.function || {};
+          var argsStr = fn.arguments || '';
+          try { argsStr = JSON.stringify(JSON.parse(argsStr), null, 2); } catch(e) {}
+          html += '<div class="tc-block">';
+          html += '<span class="tc-name">' + esc(fn.name || tc.name || '?') + '</span>';
+          html += '<span class="tc-id">id: ' + esc(tc.id || '') + '</span>';
+          html += '<pre class="tc-args">' + esc(argsStr) + '</pre>';
+          html += '</div>';
+        }
+      }
+    } else {
+      html += '<div style="margin:12px 0;padding:10px;background:#fff3cd;border-radius:6px;font-size:12px;color:#856404;">';
+      html += '⚠️ 此快照没有 LLM 回复数据（旧快照或请求失败的记录）。新的对话将自动包含完整回复。</div>';
+    }
+
+    // api_kwargs
+    html += '<details style="margin-top:14px;"><summary style="cursor:pointer;font-size:13px;color:var(--accent);">⚙️ 完整 API 请求参数</summary>';
+    html += '<pre class="code" style="max-height:300px;">' + esc(JSON.stringify(d.api_kwargs || {}, null, 2)) + '</pre>';
+    html += '</details>';
+
+    panel.innerHTML = html;
+  } catch (e) {
+    panel.innerHTML = '<div class="error">加载详情失败: ' + e.message +
+      '<br><br><button onclick="closeDetail()" style="padding:4px 12px;cursor:pointer;">关闭</button></div>';
+  }
+}
+
+function closeDetail() {
+  document.getElementById('overlay').classList.remove('open');
+  currentFile = null;
+  renderTable();
+}
+
+// Helpers
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function escAttr(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Init
+loadData();
+</script>
+</body>
+</html>

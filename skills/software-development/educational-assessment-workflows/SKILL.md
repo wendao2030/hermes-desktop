@@ -376,6 +376,20 @@ mkdir -p "$HOME/Desktop/作业批改/SpringCloud/T8"
 - Create reusable grading scripts
 - Establish folder structures for multiple classes/terms
 
+## Related Technique: Word Document Automation
+
+For tasks involving programmatic manipulation of Word documents, see the reference files:
+
+- `references/word-doc-automation-win32com.md` — Using win32com to manipulate legacy `.doc` files (find paragraphs, insert/delete content, batch-process multiple documents, handle Chinese text encoding pitfalls). Use this for old-format `.doc` files that python-docx cannot open.
+
+- `references/docx-xml-manipulation.md` — Direct XML manipulation of `.docx` files via zipfile + regex. Use this for complex table structures (教案 teaching plans, course summaries with merged cells) where python-docx falls short. Covers: regex pitfalls with `<w:trPr>`/`<w:tcPr>`, finding all section positions before processing, building new cell content, and user preferences for content placement and class differentiation.
+
+These techniques are useful when you need to:
+- Fill in pre-formatted `.doc` or `.docx` templates with course-specific content
+- Batch-generate teaching summary documents for multiple courses
+- Update existing Word documents with new sections programmatically
+- Replace content in specific table cells of教案 (lesson plan) documents
+
 ## Quick Reference Commands
 
 ### Folder Structure Setup

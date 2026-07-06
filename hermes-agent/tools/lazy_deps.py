@@ -229,7 +229,10 @@ def _allow_lazy_installs() -> bool:
     refusing to install would lock people out of their own backends; the
     decision to block is an explicit user opt-in.
     """
-    if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1":
+    disabled_values = {"1", "true", "yes", "on"}
+    if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").strip().lower() in disabled_values:
+        return False
+    if os.environ.get("HERMES_DISABLE_OPTIONAL_DEP_INSTALL", "").strip().lower() in disabled_values:
         return False
     try:
         from hermes_cli.config import load_config
@@ -239,6 +242,41 @@ def _allow_lazy_installs() -> bool:
     sec = cfg.get("security") or {}
     val = sec.get("allow_lazy_installs", True)
     return bool(val)
+
+
+def _desktop_venv_root() -> Path | None:
+    """Return the Hermes Desktop venv when the server runs from private runtime."""
+    for env_name in ("HERMES_AGENT_VENV", "HERMES_VENV"):
+        raw = os.environ.get(env_name)
+        if raw:
+            path = Path(raw)
+            if path.exists():
+                return path
+    home = os.environ.get("HERMES_HOME")
+    if home:
+        path = Path(home) / "hermes-agent" / "venv"
+        if path.exists():
+            return path
+    return None
+
+
+def _target_venv_python() -> tuple[Path, Path]:
+    venv_root = _desktop_venv_root()
+    if venv_root:
+        if os.name == "nt":
+            python = venv_root / "Scripts" / "python.exe"
+        else:
+            python = venv_root / "bin" / "python"
+        if python.exists():
+            return python, venv_root
+    python = Path(sys.executable)
+    return python, python.parent.parent
+
+
+def _run_install_command(args: list[str], **kwargs) -> subprocess.CompletedProcess:
+    if os.name == "nt":
+        kwargs.setdefault("creationflags", getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    return subprocess.run(args, **kwargs)
 
 
 def _spec_is_safe(spec: str) -> bool:
@@ -349,14 +387,14 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
     if not specs:
         return _InstallResult(True, "", "")
 
-    venv_root = Path(sys.executable).parent.parent
+    python_exe, venv_root = _target_venv_python()
     uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
 
     # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
     uv_bin = shutil.which("uv")
     if uv_bin:
         try:
-            r = subprocess.run(
+            r = _run_install_command(
                 [uv_bin, "pip", "install", *specs],
                 capture_output=True, text=True, timeout=timeout, env=uv_env,
             )
@@ -367,9 +405,9 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             logger.debug("uv invocation failed: %s", e)
 
     # Tier 2: python -m pip (with ensurepip bootstrap if needed)
-    pip_cmd = [sys.executable, "-m", "pip"]
+    pip_cmd = [str(python_exe), "-m", "pip"]
     try:
-        probe = subprocess.run(
+        probe = _run_install_command(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
         )
@@ -377,8 +415,8 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             raise FileNotFoundError("pip not in venv")
     except (subprocess.TimeoutExpired, FileNotFoundError):
         try:
-            subprocess.run(
-                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+            _run_install_command(
+                [str(python_exe), "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
@@ -386,7 +424,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                                   f"pip not available and ensurepip failed: {e}")
 
     try:
-        r = subprocess.run(
+        r = _run_install_command(
             pip_cmd + ["install", *specs],
             capture_output=True, text=True, timeout=timeout,
         )

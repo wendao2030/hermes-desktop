@@ -54,7 +54,7 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 .session-item.active { background:var(--accent-light); color:#8a2e22; padding-left:11px; }
 .session-item .title { color:var(--text); font-weight:500; }
 .session-item .date { color:var(--text2); font-size:11px; margin-top:3px; }
-.sidebar-footer { padding:14px 16px 36px 16px; border-top:1px solid rgba(200,180,155,0.25); font-size:12px; color:var(--text2); background:rgba(200,180,155,0.06); display:flex; flex-direction:column; gap:8px; margin-top:auto; flex-shrink:0; position:relative; }
+.sidebar-footer { padding:14px 16px 36px 16px; border-top:1px solid rgba(200,180,155,0.25); font-size:12px; color:var(--text2); background:rgba(200,180,155,0.06); display:flex; flex-direction:column; gap:8px; margin-top:auto; flex-shrink:0; position:relative; max-height:calc(100vh - 130px); }
 .btn-minimize-bubble { width:100%; padding:8px 12px; background:rgba(212,81,58,0.1); color:var(--accent); border:1px solid rgba(212,81,58,0.25); border-radius:6px; cursor:pointer; font-size:12px; font-weight:600; transition:all .15s; text-align:center; }
 .btn-minimize-bubble:hover { background:rgba(212,81,58,0.18); transform:translateY(-1px); }
 .sidebar-footer-row { display:flex; gap:8px; align-items:center; }
@@ -64,9 +64,10 @@ html, body { font-family:var(--font); background:var(--bg); color:var(--text); h
 .btn-settings-item { display:block; width:100%; padding:8px 10px; background:none; color:var(--text); border:1px solid transparent; border-radius:6px; cursor:pointer; font-size:13px; text-align:left; transition:all .15s; }
 .btn-settings-item:hover { background:var(--surface2); }
 .btn-settings-item.active { background:var(--accent-light); color:var(--accent); }
+.settings-icon { display:inline-block; width:20px; text-align:center; margin-right:4px; }
 .settings-panel { overflow:hidden; transition:max-height .25s ease, opacity .25s ease, margin .25s ease; max-height:0; opacity:0; margin-top:0; }
-.settings-panel.open { max-height:260px; opacity:1; margin-top:4px; }
-.settings-panel-inner { padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
+.settings-panel.open { max-height:min(360px, calc(100vh - 250px)); opacity:1; margin-top:4px; }
+.settings-panel-inner { padding:10px 12px; background:var(--surface); border:1px solid var(--border); border-radius:8px; max-height:calc(100vh - 260px); overflow-y:auto; }
 .settings-item { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; }
 .settings-item label { display:flex; align-items:center; gap:6px; cursor:pointer; font-size:12px; color:var(--text); }
 .settings-item input[type="checkbox"] { accent-color:var(--accent); width:14px; height:14px; cursor:pointer; }
@@ -165,7 +166,7 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
 .context-menu-item:hover { background:var(--surface2); }
 .context-menu-item.danger { color:var(--danger); }
 .context-menu-item.danger:hover { background:#fdedec; }
-.sidebar-nav { display:flex; flex-direction:column; gap:2px; padding:8px; border-top:1px solid var(--border); }
+.sidebar-nav { flex:1; min-height:0; overflow-y:auto; display:flex; flex-direction:column; gap:2px; padding:8px; border-top:1px solid var(--border); }
 .sidebar-nav-item { display:flex; align-items:center; gap:8px; padding:10px 14px; border-radius:9px; cursor:pointer; font-size:13px; color:var(--text); transition:background .15s, color .15s; border:none; }
 .sidebar-nav-item:hover { background:rgba(200,180,155,0.18); }
 .sidebar-nav-item.active { background:rgba(192,57,43,0.08); color:#a03226; font-weight:600; }
@@ -327,8 +328,10 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
 .emp-submenu .emp-role { font-size:10px; }
 
 /* Add employee + button on nav item */
-.emp-add-btn { display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:14px;line-height:1;margin-left:auto;cursor:pointer;font-weight:bold;transition:opacity .15s; flex-shrink:0; }
+.emp-add-btn { display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:var(--accent);color:#fff;font-size:14px;line-height:1;cursor:pointer;font-weight:bold;transition:opacity .15s; flex-shrink:0; }
 .emp-add-btn:hover { opacity:.85; }
+.emp-toggle-btn { display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;font-size:10px;color:var(--text2);margin-left:auto;margin-right:4px;cursor:pointer;border-radius:3px;flex-shrink:0;transition:color .15s; }
+.emp-toggle-btn:hover { color:var(--text); background:rgba(200,180,155,0.2); }
 
 /* Home hero - Hermes main chat card */
 .home-hero { display:flex;align-items:center;gap:16px;padding:20px;background:linear-gradient(135deg,rgba(220,80,60,0.06),rgba(255,252,248,0.9));border:1px solid rgba(220,80,60,0.12);border-radius:14px;margin-bottom:16px;cursor:pointer;transition:transform .15s,box-shadow .15s; }
@@ -346,6 +349,7 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
 .emoji-option { display:flex;align-items:center;justify-content:center;width:32px;height:32px;font-size:22px;cursor:pointer;border-radius:6px;transition:background .1s; user-select:none; }
 .emoji-option:hover { background:rgba(200,180,155,0.2); }
 .emoji-option.active { background:var(--accent-light); outline:2px solid var(--accent); }
+
 [v-cloak] { display: none; }
 </style>
 </head>
@@ -354,18 +358,19 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
     <template v-if="appReady">
     <div class="sidebar" :class="{ collapsed: sidebarCollapsed }">
         <div class="sidebar-header" @click="switchToHome()" style="cursor:pointer;">
-            <h2><img src="/static/hermes_logo.png" alt="Hermes"> Hermes 智能助手</h2>
+            <h2><img src="/static/hermes_logo.png" alt="Hermes"> Hermes 超级员工</h2>
         </div>
         <div class="sidebar-nav">
             <div class="sidebar-nav-item" :class="{ active: activeView === 'chat' }" @click="goToMainChat()">
                 <span class="nav-icon">💬</span> 对话
             </div>
-            <div class="sidebar-nav-item" :class="{ active: activeView === 'team' }">
+            <div class="sidebar-nav-item" :class="{ active: activeView === 'team' }" @click="toggleEmployeeList($event)">
                 <span class="nav-icon">📁</span> 我的员工
                 <span class="nav-badge" v-if="employees.length">{{ employees.length }}</span>
+                <span class="emp-expand-icon">{{ employeeListExpanded ? '▾' : '▸' }}</span>
                 <span class="emp-add-btn" @click.stop="showNewEmployeeDialog = true" title="添加员工">+</span>
             </div>
-            <div v-if="employees.length > 0" class="emp-submenu">
+            <div v-if="employees.length > 0 && employeeListExpanded" class="emp-submenu">
                 <div class="employee-list">
                 <div
                     v-for="emp in employees"
@@ -383,9 +388,16 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
                 </div>
                 </div>
             </div>
+            <div class="sidebar-nav-item" :class="{ active: activeView === 'collabAgents' }" @click="switchToCollabAgents()">
+                <span class="nav-icon">🤝</span> 协作智能体
+            </div>
             <div class="sidebar-nav-item" :class="{ active: activeView === 'skills' }" @click="switchToSkills()">
                 <span class="nav-icon">🧩</span> 技能
             </div>
+        </div>
+        <!-- Skill context menu -->
+        <div v-if="skillContextMenu.visible" class="context-menu" :style="{ left: skillContextMenu.x + 'px', top: skillContextMenu.y + 'px' }" @click.stop @mouseleave="hideSkillContextMenu">
+            <div class="context-menu-item danger" @click="deleteSkillFromMenu(skillContextMenu.skill)">🗑 删除技能</div>
         </div>
         <!-- Employee context menu -->
         <div v-if="empContextMenu.visible" class="context-menu" :style="{ left: empContextMenu.x + 'px', top: empContextMenu.y + 'px' }" @click.stop @mouseleave="hideEmpContextMenu">
@@ -400,16 +412,20 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
             <button class="btn-settings" :class="{ active: showSettings }" @click="showSettings = !showSettings" title="设置" style="position:absolute;bottom:4px;left:8px;">⚙</button>
             <div class="settings-panel" :class="{ open: showSettings }">
                 <div class="settings-panel-inner">
-                    <button class="btn-settings-item" @click="showLog = !showLog; showSettings=false;" :class="{ active: showLog }">查看服务日志</button>
-                    <button class="btn-settings-item" @click="createVersionSnapshot">保存版本快照</button>
-                    <button class="btn-settings-item" @click="openVersionDialog">恢复旧版本</button>
-                    <div style="display:flex;align-items:center;gap:6px;padding:8px 0;">
-                        <span style="font-size:12px;white-space:nowrap;">清除聊天：</span>
-                        <select @change="clearChatByRange($event.target.value); $event.target.value='';" style="flex:1;padding:5px 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:#fff;color:var(--text);">
-                            <option value="">选择范围...</option>
-                            <option value="today">清除今天</option>
-                            <option value="week">清除过去一周</option>
-                            <option value="month">清除过去一月</option>
+                    <button class="btn-settings-item" @click="showLog = !showLog; showSettings=false;" :class="{ active: showLog }"><span class="settings-icon">📋</span> 查看服务日志</button>
+                    <button class="btn-settings-item" @click="syncPromptsToConsole" :disabled="promptSyncBusy">
+                        <span class="settings-icon">📤</span> {{ promptSyncBusy ? '同步中...' : '同步 Prompt 到服务器' }}
+                    </button>
+                    <button class="btn-settings-item" @click="openWorkDirDialog"><span class="settings-icon">📁</span> 工作目录</button>
+                    <button class="btn-settings-item" @click="createVersionSnapshot"><span class="settings-icon">💾</span> 保存版本快照</button>
+                    <button class="btn-settings-item" @click="openVersionDialog"><span class="settings-icon">⏪</span> 恢复旧版本</button>
+                    <div class="btn-settings-item" style="display:flex;align-items:center;padding-right:6px;">
+                        <span class="settings-icon">🗑</span> <span style="font-size:13px;">清除聊天</span>
+                        <select @change="clearChatByRange($event.target.value); $event.target.value='';" style="margin-left:auto;padding:3px 4px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:#fff;color:var(--text);max-width:100px;">
+                            <option value="">范围...</option>
+                            <option value="today">今天</option>
+                            <option value="week">一周</option>
+                            <option value="month">一月</option>
                         </select>
                     </div>
                 </div>
@@ -526,7 +542,7 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
                 <div v-if="employees.length === 0 && cronJobs.length === 0" class="chat-empty">
                     <div>
                         <img src="/static/hermes_logo.png" alt="Hermes" style="width:100px;height:100px;border-radius:20px;object-fit:cover;margin-bottom:16px;box-shadow:0 4px 16px rgba(0,0,0,0.12);">
-                        <strong>欢迎使用 Hermes 智能助手</strong><br>
+                        <strong>欢迎使用 Hermes 超级员工</strong><br>
                         <small style="color:var(--text2);">在下方输入你的问题开始使用，或添加你的第一个员工</small>
                     </div>
                 </div>
@@ -538,7 +554,7 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
             <div v-if="messages.length === 0 && !isThinking && !isLoadingSession" class="chat-empty">
                 <div>
                     <img src="/static/hermes_logo.png" alt="Hermes" style="width:120px;height:120px;border-radius:20px;object-fit:cover;margin-bottom:20px;box-shadow:0 6px 24px rgba(0,0,0,0.18);">
-                    <strong>欢迎使用 Hermes 智能助手</strong><br>
+                    <strong>欢迎使用 Hermes 超级员工</strong><br>
                     <small style="color:var(--text2)">输入你的问题，按 Enter 发送</small>
                 </div>
             </div>
@@ -547,10 +563,10 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
             </div>
 
             <template v-for="(msg, idx) in displayedMessages" :key="idx">
-                <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
+                <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent" :data-message-id="msg.id || ''">
                     <img class="msg-avatar" src="/static/bubble_icon.png" alt="Hermes">
                     <div class="msg-body" :class="{ 'has-media': msg.media && msg.media.length }">
-                        <div v-if="msg.html || !msg.media || !msg.media.length" class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                        <div v-if="msg.html || !msg.media || !msg.media.length" class="message" :class="msg.role" :data-message-id="msg.id || ''" v-html="msg.html || msg.content"></div>
                         <div v-if="visibleMediaItems(msg).length" class="media-bundle">
                             <div class="media-bundle-head">
                                 <span class="media-bundle-title">生成结果（{{ visibleMediaItems(msg).length }}个）</span>
@@ -570,14 +586,14 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
                         </div>
                     </div>
                 </div>
-                <div v-else-if="msg.role === 'user'" class="msg-row user">
+                <div v-else-if="msg.role === 'user'" class="msg-row user" :data-message-id="msg.id || ''">
                     <div class="msg-body">
-                        <div class="message user" v-html="msg.html || msg.content"></div>
+                        <div class="message user" :data-message-id="msg.id || ''" v-html="msg.html || msg.content"></div>
                         <div v-if="msg.timestamp" class="msg-time">{{ formatMessageTime(msg.timestamp) }}</div>
                     </div>
                 </div>
                 <div v-else>
-                    <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                    <div class="message" :class="msg.role" :data-message-id="msg.id || ''" v-html="msg.html || msg.content"></div>
                     <div v-if="msg.timestamp" class="msg-time" style="text-align:center;">{{ formatMessageTime(msg.timestamp) }}</div>
                 </div>
             </template>
@@ -682,10 +698,10 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
                     <div style="font-size:13px;color:var(--text2);">正在加载对话...</div>
                 </div>
                 <template v-for="(msg, idx) in displayedMessages" :key="'emp-'+idx">
-                    <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent">
+                    <div v-if="msg.role === 'agent' || msg.role === 'agent-streaming'" class="msg-row agent" :data-message-id="msg.id || ''">
                         <span class="msg-avatar" style="display:inline-flex;align-items:center;justify-content:center;font-size:18px;background:var(--surface2);border-radius:50%;flex-shrink:0;width:32px;height:32px;">{{ (currentEmployee && currentEmployee.emoji) || '🤖' }}</span>
                         <div class="msg-body" :class="{ 'has-media': msg.media && msg.media.length }">
-                            <div v-if="msg.html || !msg.media || !msg.media.length" class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                            <div v-if="msg.html || !msg.media || !msg.media.length" class="message" :class="msg.role" :data-message-id="msg.id || ''" v-html="msg.html || msg.content"></div>
                             <div v-if="visibleMediaItems(msg).length" class="media-bundle">
                                 <div class="media-bundle-head">
                                     <span class="media-bundle-title">生成结果（{{ visibleMediaItems(msg).length }}个）</span>
@@ -701,14 +717,14 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
                             <div v-if="msg.timestamp" class="msg-time">{{ formatMessageTime(msg.timestamp) }}</div>
                         </div>
                     </div>
-                    <div v-else-if="msg.role === 'user'" class="msg-row user">
+                    <div v-else-if="msg.role === 'user'" class="msg-row user" :data-message-id="msg.id || ''">
                         <div class="msg-body">
-                            <div class="message user" v-html="msg.html || msg.content"></div>
+                            <div class="message user" :data-message-id="msg.id || ''" v-html="msg.html || msg.content"></div>
                             <div v-if="msg.timestamp" class="msg-time">{{ formatMessageTime(msg.timestamp) }}</div>
                         </div>
                     </div>
                     <div v-else>
-                        <div class="message" :class="msg.role" v-html="msg.html || msg.content"></div>
+                        <div class="message" :class="msg.role" :data-message-id="msg.id || ''" v-html="msg.html || msg.content"></div>
                         <div v-if="msg.timestamp" class="msg-time" style="text-align:center;">{{ formatMessageTime(msg.timestamp) }}</div>
                     </div>
                 </template>
@@ -763,6 +779,43 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
             </div>
         </div>
 
+        <!-- ========== COLLAB AGENTS VIEW ========== -->
+        <div v-if="activeView === 'collabAgents'" class="page-view">
+            <div class="page-toolbar">
+                <span class="toolbar-title">🤝 协作智能体</span>
+                <button class="btn-sm primary" @click="openNewCollabAgent">添加智能体</button>
+            </div>
+            <div class="page-list">
+                <div v-if="collabLoading" class="empty-state">
+                    <div class="empty-icon">⏳</div>
+                    <div class="empty-title">正在加载</div>
+                </div>
+                <div v-else-if="collabAgents.length === 0" class="empty-state">
+                    <div class="empty-icon">🤝</div>
+                    <div class="empty-title">还没有协作智能体</div>
+                    <div class="empty-hint">可以先接入 Resident0、Coze 或一个 HTTP Agent。</div>
+                </div>
+                <div v-for="agent in collabAgents" :key="agent.id" class="card" style="cursor:default;">
+                    <div class="card-header" style="gap:10px;">
+                        <span class="card-name" style="margin-right:auto;">{{ agent.name }}</span>
+                        <span class="badge blue">{{ collabTypeLabel(agent.type) }}</span>
+                        <span :class="['badge', agent.last_status === 'online' ? 'green' : agent.last_status === 'error' ? 'red' : 'gray']">{{ collabStatusLabel(agent) }}</span>
+                    </div>
+                    <div class="card-desc" style="word-break:break-all;">{{ agent.endpoint }}</div>
+                    <div class="card-meta" v-if="agent.agent_card">
+                        <span class="badge green" v-if="agent.agent_card.name">{{ agent.agent_card.name }}</span>
+                        <span class="badge purple" v-for="cap in (agent.agent_card.capabilities || []).slice(0, 5)" :key="cap.id || cap.name">{{ cap.name || cap.id }}</span>
+                    </div>
+                    <div v-if="agent.last_error" class="card-desc" style="margin-top:8px;color:var(--danger);">{{ agent.last_error }}</div>
+                    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+                        <button class="btn-sm action" @click="testCollabAgent(agent)" :disabled="collabTestingId === agent.id">{{ collabTestingId === agent.id ? '测试中...' : '测试连接' }}</button>
+                        <button class="btn-sm ghost" @click="editCollabAgent(agent)">编辑</button>
+                        <button class="btn-sm danger" @click="deleteCollabAgent(agent)">删除</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- ========== SKILLS VIEW ========== -->
         <div v-if="activeView === 'skills'" class="page-view">
             <div v-if="!skillDetailName" class="skills-shell">
@@ -772,7 +825,8 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
                         <button class="skills-tab" :class="{ active: skillsTab === 'market' }" @click="switchToMarket()">技能广场</button>
                     </div>
                     <input v-if="skillsTab === 'market'" class="search-input" v-model="marketQuery" placeholder="搜索技能..." @keydown.enter="searchMarket">
-                    <span v-if="skillsTab === 'mine'" style="font-size:12px;color:var(--text2);margin-left:auto;">{{ installedSkills.length }} 个技能</span>
+                    <input v-if="skillsTab === 'mine'" class="search-input" v-model="installedSearchQuery" placeholder="搜索已安装..." @input="filterInstalledSkills">
+                    <span v-if="skillsTab === 'mine'" style="font-size:12px;color:var(--text2);margin-left:8px;">{{ filteredInstalledSkills.length }} / {{ installedSkills.length }}</span>
                 </div>
                 <div class="skills-list">
                     <div v-if="skillsTab === 'mine'">
@@ -781,7 +835,9 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
                             <div class="empty-title">还没有安装任何技能</div>
                             <div class="empty-hint">前往「技能广场」挑选你需要的技能吧</div>
                         </div>
-                        <div v-for="sk in installedSkills" :key="sk.name" class="card" @click="viewSkillDetail(sk.name)">
+                        <div v-for="sk in filteredInstalledSkills" :key="sk.name" class="card skill-card"
+                             @click="viewSkillDetail(sk.name)"
+                             @contextmenu.prevent="showSkillContextMenu($event, sk)">
                             <div class="card-header">
                                 <span class="card-name">{{ sk.name }}</span>
                                 <span :class="['badge', sk.enabled ? 'green' : 'gray']">{{ sk.enabled ? '已启用' : '已禁用' }}</span>
@@ -848,6 +904,47 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
     <div v-if="rightClickMenu.visible" class="context-menu" :style="{ left: rightClickMenu.x + 'px', top: rightClickMenu.y + 'px' }" @click.stop @mouseleave="hideRightClickMenu">
         <div class="context-menu-item" @click="copySelected" v-if="rightClickMenu.selected">复制选中文字</div>
         <div class="context-menu-item" @click="copyAll">复制全部内容</div>
+        <div class="context-menu-item danger" v-if="rightClickMenu.messageId" @click="deleteMessageFromMenu">删除这条消息</div>
+    </div>
+
+    <!-- ========== COLLAB AGENT DIALOG ========== -->
+    <div v-if="showCollabDialog" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:300;display:flex;align-items:center;justify-content:center;" @click.self="showCollabDialog = false">
+        <div style="background:#fff;border-radius:12px;padding:24px;width:460px;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                <span style="font-size:16px;font-weight:600;">{{ collabForm.id ? '编辑协作智能体' : '添加协作智能体' }}</span>
+                <button style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);" @click="showCollabDialog = false">&times;</button>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">名称 *</label>
+                    <input v-model="collabForm.name" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="例如：Resident0、Coze 批改作业">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">类型</label>
+                    <select v-model="collabForm.type" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;background:#fff;">
+                        <option value="resident">Resident</option>
+                        <option value="coze">Coze</option>
+                        <option value="http">HTTP</option>
+                    </select>
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">连接地址 *</label>
+                    <input v-model="collabForm.endpoint" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="http://127.0.0.1:8000">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">访问令牌（可为空）</label>
+                    <input v-model="collabForm.token" type="password" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" :placeholder="collabForm.id ? '留空表示不修改原令牌' : '可选'">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">备注</label>
+                    <textarea v-model="collabForm.notes" rows="2" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;resize:vertical;" placeholder="这个智能体擅长什么、什么时候调用它"></textarea>
+                </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+                <button class="btn-sm ghost" @click="showCollabDialog = false">取消</button>
+                <button class="btn-sm primary" @click="saveCollabAgent">保存</button>
+            </div>
+        </div>
     </div>
 
     <!-- ========== NEW EMPLOYEE DIALOG ========== -->
@@ -874,6 +971,13 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
                 <div>
                     <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">角色/职位</label>
                     <input v-model="newEmployee.role" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="例如：设计师、开发工程师">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作目录（可为空）</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input v-model="newEmployee.work_dir" style="flex:1;min-width:0;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="为空时使用全局工作目录">
+                        <button class="btn-sm ghost" @click="chooseEmployeeWorkDir('new')" type="button">选择</button>
+                    </div>
                 </div>
                 <div>
                     <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">性格特征</label>
@@ -938,6 +1042,13 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
                 <div>
                     <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">角色/职位</label>
                     <input v-model="editEmployeeForm.role" style="width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;">
+                </div>
+                <div>
+                    <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">工作目录（可为空）</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input v-model="editEmployeeForm.work_dir" style="flex:1;min-width:0;padding:8px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="为空时使用全局工作目录">
+                        <button class="btn-sm ghost" @click="chooseEmployeeWorkDir('edit')" type="button">选择</button>
+                    </div>
                 </div>
                 <div>
                     <label style="font-size:12px;color:var(--text2);display:block;margin-bottom:4px;">性格特征</label>
@@ -1109,6 +1220,32 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
         </div>
     </div>
 
+    <!-- ========== WORK DIRECTORY DIALOG ========== -->
+    <div v-if="showWorkDirDialog" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:335;display:flex;align-items:center;justify-content:center;" @click.self="showWorkDirDialog = false">
+        <div style="background:#fff;border-radius:12px;padding:24px;width:500px;max-width:calc(100vw - 40px);box-shadow:0 8px 32px rgba(0,0,0,0.18);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+                <span style="font-size:16px;font-weight:600;">工作目录</span>
+                <button style="background:none;border:none;font-size:20px;cursor:pointer;color:var(--text2);" @click="showWorkDirDialog = false">&times;</button>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+                <div style="font-size:12px;color:var(--text2);line-height:1.7;">
+                    员工没有单独设置时，会默认使用这里。读取、创建、修改用户文件时，也会优先参考这个目录。
+                </div>
+                <label style="font-size:12px;color:var(--text2);display:block;">全局工作目录</label>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <input v-model="workDirDraft" style="flex:1;min-width:0;padding:9px 12px;border:1px solid var(--border);border-radius:8px;font-size:13px;" placeholder="例如：D:\工作区">
+                    <button class="btn-sm ghost" @click="chooseGlobalWorkDir" type="button">选择</button>
+                </div>
+                <div v-if="config.global_work_dir" style="font-size:12px;color:var(--text2);word-break:break-all;">当前：{{ config.global_work_dir }}</div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:18px;justify-content:flex-end;">
+                <button class="btn-sm ghost" @click="openGlobalWorkDir" :disabled="!config.global_work_dir">打开当前目录</button>
+                <button class="btn-sm ghost" @click="showWorkDirDialog = false">取消</button>
+                <button class="btn-sm primary" @click="saveGlobalWorkDir" :disabled="workDirBusy">{{ workDirBusy ? '保存中...' : '保存' }}</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ========== CAPTURE WORKFLOW / EXPERIENCE DIALOG ========== -->
     <div v-if="showWorkflowCaptureDialog" style="position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:330;display:flex;align-items:center;justify-content:center;" @click.self="closeWorkflowCaptureDialog">
         <div style="background:#fff;border-radius:12px;padding:24px;width:460px;max-height:75vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,0.18);">
@@ -1143,6 +1280,6 @@ video.media-preview { object-fit:contain; background:#1f1a17; cursor:default; }
     </template>
 </div>
 
-<script src="/static/app.js?v=67"></script>
+<script src="/static/app.js?v=78"></script>
 </body>
 </html>

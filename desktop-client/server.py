@@ -7,6 +7,7 @@ Thin glue layer between Vue frontend and AIAgent backend.
 import sys
 import os
 import json
+import site
 import uuid
 import threading
 import asyncio
@@ -21,6 +22,8 @@ import hashlib
 import subprocess
 from io import BytesIO
 from urllib.parse import urlparse
+from urllib.request import Request as UrlRequest, urlopen
+from urllib.error import URLError, HTTPError
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -32,6 +35,10 @@ HERMES_AGENT = HERMES_HOME / "hermes-agent"
 HERMES_VENV_SITE = HERMES_HOME / "hermes-agent" / "venv" / "Lib" / "site-packages"
 os.environ["HERMES_HOME"] = str(HERMES_HOME)
 os.environ.setdefault("HERMES_DESKTOP_SERVE_ONLY", "1")
+os.environ.setdefault("HERMES_DISABLE_OPTIONAL_DEP_INSTALL", "1")
+os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
+os.environ.setdefault("HERMES_AGENT_VENV", str(HERMES_AGENT / "venv"))
+os.environ.setdefault("HERMES_VENV_PYTHON", str(HERMES_AGENT / "venv" / "Scripts" / "python.exe"))
 # Auto-detect Chromium browser (Edge > Chrome > Chromium) for Playwright
 _browser = shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
 if not _browser:
@@ -41,6 +48,13 @@ if not _browser:
 if _browser:
     os.environ.setdefault("PUPPETEER_EXECUTABLE_PATH", _browser)
 if HERMES_VENV_SITE.exists():
+    # addsitepackages processes .pth files. pywin32 depends on pywin32.pth to
+    # expose win32/pywin32_system32, so a plain sys.path.insert is not enough.
+    site.addsitedir(str(HERMES_VENV_SITE))
+    try:
+        sys.path.remove(str(HERMES_VENV_SITE))
+    except ValueError:
+        pass
     sys.path.insert(0, str(HERMES_VENV_SITE))
 sys.path.insert(0, str(HERMES_AGENT))
 
@@ -83,6 +97,7 @@ from utils import is_truthy_value, normalize_proxy_env_vars
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
 # --- Config / environment ---
@@ -106,6 +121,18 @@ def load_config():
     return load_hermes_config()
 
 app = FastAPI(title="Hermes Desktop Client")
+
+# Allow cross-origin requests so the standalone prompt-viewer.html
+# (opened from file://) can call the API.  Note: allow_credentials=True
+# is incompatible with allow_origins=["*"] per the Fetch spec, so we
+# keep credentials off — the viewer uses no-auth endpoints anyway.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 DESKTOP_HOST_VALUES = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 SESSION_ID_RE = re.compile(r"^(?:\d{8}_\d{6}_[a-f0-9]{6,8}|emp-[a-f0-9]{8})$")
@@ -209,7 +236,7 @@ log_msg("INFO", "Server starting up...")
 
 # --- Employee system ---
 EMPLOYEES_DIR = HERMES_HOME / "employees"
-MAX_EMPLOYEES = 5
+MAX_EMPLOYEES = 10
 
 def _employees_index_path() -> Path:
     return EMPLOYEES_DIR / "index.json"
@@ -746,6 +773,8 @@ def _build_profile_md(emp: dict) -> str:
     lines.append(f"- 头像：{emp.get('emoji', '🤖')}")
     if emp.get("role"):
         lines.append(f"- 角色：{emp.get('role', '')}（擅长领域/专家方向）")
+    if emp.get("work_dir"):
+        lines.append(f"- 工作目录：{emp.get('work_dir', '')}")
     lines.append(f"- 创建时间：{emp.get('created_at', '')}\n")
     if emp.get("personality"):
         lines.append(f"## 性格特征")
@@ -828,7 +857,7 @@ last_user_activity_at = time.time()
 SESSION_LOCK_UI_TIMEOUT = float(os.environ.get("HERMES_SESSION_LOCK_UI_TIMEOUT", "0.3"))
 INTERRUPT_JOIN_TIMEOUT = float(os.environ.get("HERMES_INTERRUPT_JOIN_TIMEOUT", "0.2"))
 AGENT_JOIN_TIMEOUT = float(os.environ.get("HERMES_AGENT_JOIN_TIMEOUT", "45"))
-AGENT_HEARTBEAT_SECONDS = max(float(os.environ.get("HERMES_AGENT_HEARTBEAT_SECONDS", "15")), 5.0)
+AGENT_HEARTBEAT_SECONDS = max(float(os.environ.get("HERMES_AGENT_HEARTBEAT_SECONDS", "10")), 5.0)
 AGENT_STUCK_HINT_SECONDS = max(float(os.environ.get("HERMES_AGENT_STUCK_HINT_SECONDS", "600")), 300.0)
 BACKGROUND_REVIEW_IDLE_SECONDS = float(os.environ.get("HERMES_DESKTOP_BACKGROUND_REVIEW_IDLE_SECONDS", "900"))
 BACKGROUND_REVIEW_DISPUTE_COOLDOWN_SECONDS = float(
@@ -852,6 +881,85 @@ VERSION_TARGET_ALIASES = {
     "user.md": "user",
 }
 VERSION_TARGETS = {"state", "memory", "user"}
+
+
+def _ensure_execution_ledger_tables() -> None:
+    """Create the generic execution evidence tables used by desktop turns."""
+    try:
+        with session_db._lock:
+            session_db._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tool_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT NOT NULL,
+                    run_id INTEGER NOT NULL,
+                    tool_call_id TEXT,
+                    tool_name TEXT NOT NULL,
+                    status TEXT,
+                    args_json TEXT,
+                    result_json TEXT,
+                    started_at REAL,
+                    completed_at REAL,
+                    success INTEGER,
+                    error TEXT,
+                    evidence_summary TEXT
+                )
+                """
+            )
+            session_db._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS artifacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tool_run_id INTEGER REFERENCES tool_runs(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL,
+                    run_id INTEGER NOT NULL,
+                    kind TEXT,
+                    path TEXT,
+                    url TEXT,
+                    exists_flag INTEGER,
+                    size INTEGER,
+                    created_at REAL NOT NULL,
+                    metadata_json TEXT
+                )
+                """
+            )
+            session_db._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_assets (
+                    id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    employee_id TEXT,
+                    kind TEXT NOT NULL,
+                    source TEXT,
+                    path TEXT,
+                    url TEXT,
+                    group_id TEXT,
+                    created_at REAL NOT NULL,
+                    metadata_json TEXT
+                )
+                """
+            )
+            session_db._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tool_runs_session_run ON tool_runs(session_id, run_id)"
+            )
+            session_db._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tool_runs_call ON tool_runs(session_id, run_id, tool_call_id)"
+            )
+            session_db._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_artifacts_session_run ON artifacts(session_id, run_id)"
+            )
+            session_db._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_media_assets_session_kind ON media_assets(session_id, kind, created_at)"
+            )
+            session_db._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_media_assets_group ON media_assets(session_id, group_id)"
+            )
+            session_db._conn.commit()
+    except Exception as e:
+        log_msg("WARN", f"Failed to ensure execution ledger tables: {e}")
+
+
+_ensure_execution_ledger_tables()
 
 # --- Auto-shutdown when browser closes ---
 active_connections = 0
@@ -1197,6 +1305,187 @@ def _set_main_session_id(session_id: str) -> None:
     state["main_session_updated_at"] = datetime.now().isoformat()
     _save_desktop_state(state)
 
+def _normalize_work_dir(value: str, *, create: bool = False) -> str:
+    raw = str(value or "").strip().strip('"')
+    if not raw:
+        return ""
+    expanded = os.path.expandvars(os.path.expanduser(raw))
+    path = Path(expanded)
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        raise ValueError(f"工作目录不存在：{path}")
+    if not path.is_dir():
+        raise ValueError(f"工作目录不是文件夹：{path}")
+    return str(path.resolve())
+
+def _get_global_work_dir() -> str:
+    state = _load_desktop_state()
+    raw = str(state.get("global_work_dir") or "").strip()
+    if not raw:
+        return ""
+    try:
+        return _normalize_work_dir(raw)
+    except Exception as e:
+        log_msg("WARN", f"Configured global work dir is unavailable: {e}")
+        return ""
+
+def _set_global_work_dir(value: str, *, create: bool = False) -> str:
+    work_dir = _normalize_work_dir(value, create=create) if str(value or "").strip() else ""
+    state = _load_desktop_state()
+    state["global_work_dir"] = work_dir
+    state["global_work_dir_updated_at"] = datetime.now().isoformat()
+    _save_desktop_state(state)
+    return work_dir
+
+def _normalize_collab_endpoint(value: str) -> str:
+    raw = str(value or "").strip().strip('"').rstrip("/")
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if not parsed.scheme:
+        raw = "http://" + raw
+        parsed = urlparse(raw)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("连接地址需要是 http:// 或 https:// 开头的有效地址")
+    return raw
+
+def _sanitize_collab_agent(agent: dict) -> dict:
+    result = dict(agent or {})
+    if result.get("token"):
+        result["has_token"] = True
+    result.pop("token", None)
+    return result
+
+def _load_collab_agents() -> list[dict]:
+    state = _load_desktop_state()
+    agents = state.get("collab_agents") or []
+    if not isinstance(agents, list):
+        return []
+    return [a for a in agents if isinstance(a, dict)]
+
+def _save_collab_agents(agents: list[dict]) -> None:
+    state = _load_desktop_state()
+    state["collab_agents"] = agents
+    state["collab_agents_updated_at"] = datetime.now().isoformat()
+    _save_desktop_state(state)
+
+def _fetch_json_url(url: str, token: str = "", timeout: int = 8) -> dict:
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = UrlRequest(url, headers=headers)
+    with urlopen(req, timeout=timeout) as resp:
+        raw = resp.read(1024 * 512)
+        text = raw.decode("utf-8", errors="replace")
+        try:
+            data = json.loads(text)
+        except Exception:
+            data = {"text": text[:1000]}
+        if isinstance(data, dict):
+            data["_http_status"] = getattr(resp, "status", 200)
+        return data if isinstance(data, dict) else {"data": data, "_http_status": getattr(resp, "status", 200)}
+
+def _find_collab_agent(agent_id: str) -> tuple[list[dict], dict | None, int]:
+    agents = _load_collab_agents()
+    for idx, agent in enumerate(agents):
+        if str(agent.get("id") or "") == agent_id:
+            return agents, agent, idx
+    return agents, None, -1
+
+def _employee_work_dir(emp: dict | None) -> str:
+    if not emp:
+        return ""
+    raw = str(emp.get("work_dir") or "").strip()
+    if not raw:
+        return ""
+    try:
+        return _normalize_work_dir(raw)
+    except Exception as e:
+        log_msg("WARN", f"Employee work dir is unavailable ({emp.get('id', '')}): {e}")
+        return ""
+
+def _resolve_session_work_dir(session_id: str) -> tuple[str, str]:
+    emp = _find_employee_by_session(session_id)
+    work_dir = _employee_work_dir(emp)
+    if work_dir:
+        return work_dir, "employee"
+    work_dir = _get_global_work_dir()
+    if work_dir:
+        return work_dir, "global"
+    return "", ""
+
+def _register_session_work_dir(session_id: str, *, reset: bool = False) -> str:
+    work_dir, source = _resolve_session_work_dir(session_id)
+    try:
+        from tools.terminal_tool import (
+            clear_task_env_overrides,
+            cleanup_vm,
+            register_task_env_overrides,
+        )
+        if reset:
+            cleanup_vm(session_id)
+        if work_dir:
+            register_task_env_overrides(session_id, {"cwd": work_dir})
+            log_msg("INFO", f"[{session_id[:12]}] Work dir ({source}): {work_dir}")
+        else:
+            clear_task_env_overrides(session_id)
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Register work dir failed: {e}")
+    return work_dir
+
+def _work_dir_prompt(session_id: str) -> str:
+    work_dir, source = _resolve_session_work_dir(session_id)
+    if not work_dir:
+        return ""
+    label = "employee" if source == "employee" else "global"
+    return (
+        "Default working directory:\n"
+        f"- Path: {work_dir}\n"
+        f"- Source: {label} setting.\n"
+        "- When reading, creating, editing, or running scripts for user files, "
+        "use this directory as the default unless the user explicitly names another directory.\n"
+        "- Relative paths in terminal, file, and code execution tools should resolve from this directory."
+    )
+
+
+def _recent_media_prompt(session_id: str, limit: int = 8) -> str:
+    try:
+        sid = _validate_session_id(session_id)
+    except HTTPException:
+        return ""
+    try:
+        with session_db._lock:
+            rows = session_db._conn.execute(
+                """
+                SELECT id, kind, source, path, url, group_id, created_at
+                FROM media_assets
+                WHERE session_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (sid, max(1, min(int(limit), 20))),
+            ).fetchall()
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Recent media prompt failed: {e}")
+        return ""
+    if not rows:
+        return ""
+    lines = [
+        "Recent media assets for this conversation:",
+        "- Use these ids/paths when the user refers to a previous generated or uploaded image/video.",
+        "- For video generation from images, pass image_asset_id/image_asset_ids or image_path/image_paths to video_generate.",
+    ]
+    for idx, row in enumerate(rows, 1):
+        path_or_url = row["url"] or row["path"] or ""
+        name = Path(path_or_url).name if path_or_url else ""
+        lines.append(
+            f"{idx}. id={row['id']} kind={row['kind']} source={row['source'] or ''} "
+            f"group={row['group_id'] or ''} name={name} path={path_or_url}"
+        )
+    return "\n".join(lines)
+
+
 def _ts_to_iso(value: Any) -> str:
     try:
         return datetime.fromtimestamp(float(value)).isoformat()
@@ -1219,7 +1508,8 @@ def _message_text(content: Any) -> str:
                 elif "text" in item:
                     parts.append(str(item.get("text") or ""))
                 elif item.get("type") in {"image", "image_url", "input_image"}:
-                    parts.append("[图片]")
+                    parts.append("[image]")
+                    continue
         return "\n".join(p for p in parts if p)
     return str(content)
 
@@ -1238,6 +1528,8 @@ def _history_for_frontend(history: list[dict]) -> list[dict]:
         if _is_internal_frontend_message(role, content):
             continue
         item = {"role": role, "content": content}
+        if msg.get("id") is not None:
+            item["id"] = msg.get("id")
         if msg.get("timestamp") is not None:
             item["timestamp"] = msg.get("timestamp")
         visible.append(item)
@@ -1274,7 +1566,7 @@ def _load_display_history_from_db(session_id: str, limit: int = DISPLAY_HISTORY_
         placeholders = ",".join("?" for _ in session_ids)
         with session_db._lock:
             rows = session_db._conn.execute(
-                "SELECT role, content, timestamp FROM ("
+                "SELECT id, role, content, timestamp FROM ("
                 f"SELECT id, role, content, timestamp FROM messages WHERE session_id IN ({placeholders}) "
                 "ORDER BY id DESC LIMIT ?"
                 ") ORDER BY id",
@@ -1287,6 +1579,7 @@ def _load_display_history_from_db(session_id: str, limit: int = DISPLAY_HISTORY_
             if callable(decode):
                 content = decode(content)
             history.append({
+                "id": row["id"],
                 "role": row["role"],
                 "content": content,
                 "timestamp": row["timestamp"],
@@ -1334,7 +1627,21 @@ def _requires_real_tool_action(message: str) -> bool:
         "run the script", "execute the script", "open wechat", "send message",
         "create file", "delete file",
     ]
-    return any(phrase in text for phrase in force_action_phrases)
+    if any(phrase in text for phrase in force_action_phrases):
+        return True
+
+    # Creation/generation commands often use short wording such as
+    # "再生成一张红心图，演示". Treat these as real actions up front so
+    # unverified streamed drafts are buffered until a tool result exists.
+    creation_verbs = ("生成", "创建", "新建", "制作", "画", "绘制", "导出", "保存")
+    creation_targets = (
+        "一张", "一段", "图片", "图像", "图", "视频", "文件", "文档",
+        "ppt", "pptx", "word", "docx", "excel", "xlsx", "ps", "photoshop",
+    )
+    if any(verb in text for verb in creation_verbs) and any(target in text for target in creation_targets):
+        return True
+
+    return False
 
 def _continuation_requires_real_tool_action(message: str, conversation_history: list[dict] | None) -> bool:
     """Detect short follow-up commands that inherit a real-world action target."""
@@ -1411,6 +1718,15 @@ def _assistant_claims_unverified_execution(text: str) -> bool:
         "\u6761\u65b0\u6d88\u606f",
         "\u6d88\u606f\u5df2\u53d1\u9001",
         "\u5df2\u53d1\u9001\u6210\u529f",
+        "\u751f\u6210\u6210\u529f",
+        "\u5df2\u751f\u6210",
+        "\u521b\u5efa\u6210\u529f",
+        "\u5df2\u521b\u5efa",
+        "\u5df2\u4fdd\u5b58",
+        "\u4fdd\u5b58\u5230",
+        "\u5236\u4f5c\u5b8c\u6210",
+        "generated successfully",
+        "created successfully",
         "\u804a\u5929\u5386\u53f2\u5df2\u66f4\u65b0",
         "\u5386\u53f2\u5df2\u66f4\u65b0",
         "\u7a97\u53e3\u5df2\u7f6e\u9876",
@@ -1424,7 +1740,9 @@ def _assistant_claims_unverified_execution(text: str) -> bool:
     target_terms = [
         "\u5fae\u4fe1", "wechat", "weixin", "ai\u6570\u5b57\u4eba", "\u7a97\u53e3",
         "\u6d88\u606f", "\u9f20\u6807", "\u622a\u56fe", "\u811a\u672c", "\u684c\u9762",
-        "\u6587\u4ef6", "\u8f93\u5165\u6846", "\u804a\u5929\u8bb0\u5f55",
+        "\u6587\u4ef6", "\u8f93\u5165\u6846", "\u804a\u5929\u8bb0\u5f55", "\u56fe\u7247",
+        "\u89c6\u9891", "ppt", "pptx", "\u6f14\u793a\u6587\u7a3f", "\u4fdd\u5b58\u8def\u5f84",
+        "\u751f\u6210", "\u4ea7\u7269",
     ]
     claim_terms = [
         "\u5df2\u7f6e\u9876", "\u5df2\u70b9\u51fb", "\u5df2\u6253\u5f00", "\u5df2\u53d1\u9001",
@@ -1432,6 +1750,8 @@ def _assistant_claims_unverified_execution(text: str) -> bool:
         "\u811a\u672c\u6267\u884c\u6210\u529f", "\u811a\u672c\u5df2\u6267\u884c", "\u5b8c\u6574\u6267\u884c\u6b65\u9aa4", "\u5168\u90e8\u6210\u529f",
         "\u89c6\u89c9\u5206\u6790\u663e\u793a", "\u622a\u56fe\u9a8c\u8bc1", "\u5168\u90e8\u6210\u529f\u6267\u884c",
         "\u5df2\u521b\u5efa", "\u5df2\u5220\u9664", "\u6267\u884c\u6210\u529f", "\u53d1\u9001\u6210\u529f",
+        "\u751f\u6210\u6210\u529f", "\u5df2\u751f\u6210", "\u5df2\u4fdd\u5b58", "\u4fdd\u5b58\u5230",
+        "\u521b\u5efa\u6210\u529f", "\u5236\u4f5c\u5b8c\u6210", "\u751f\u6210\u5b8c\u6210",
         "\u5df2\u53cc\u51fb", "\u5df2\u70b9\u51fb\u8f93\u5165\u6846", "\u622a\u56fe\u4fdd\u5b58\u6210\u529f",
         "\u5df2\u66f4\u65b0", "\u5386\u53f2\u5df2\u66f4\u65b0", "\u804a\u5929\u5386\u53f2\u5df2\u66f4\u65b0",
         "\u53d1\u73b0", "\u65b0\u6d88\u606f", "\u9f20\u6807\u5df2\u79fb\u52a8",
@@ -1512,6 +1832,425 @@ def _shorten_for_evidence(value: Any, limit: int = 500) -> str:
         return text[:limit] + "..."
     return text
 
+
+def _json_safe_for_ledger(value: Any, max_text: int = 4000) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= max_text else value[:max_text] + "...[truncated]"
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        safe = {}
+        for key, item in list(value.items())[:80]:
+            lowered = str(key).lower()
+            if any(secret in lowered for secret in ("key", "token", "secret", "password", "authorization")):
+                safe[str(key)] = "[redacted]"
+            else:
+                safe[str(key)] = _json_safe_for_ledger(item, max_text=max_text)
+        return safe
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_for_ledger(item, max_text=max_text) for item in list(value)[:80]]
+    return _shorten_for_evidence(value, max_text)
+
+
+def _ledger_json(value: Any) -> str:
+    try:
+        return json.dumps(_json_safe_for_ledger(value), ensure_ascii=False)
+    except Exception:
+        return json.dumps(_shorten_for_evidence(value, 2000), ensure_ascii=False)
+
+
+ARTIFACT_EXTENSIONS = (
+    "png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico",
+    "mp4", "webm", "mov", "avi", "mkv",
+    "pptx", "ppt", "docx", "doc", "xlsx", "xls", "pdf", "txt", "md", "zip",
+)
+ARTIFACT_PATH_RE = re.compile(
+    r"[A-Za-z]:\\[^\s`\"'<>|]+?\.(?:" + "|".join(ARTIFACT_EXTENSIONS) + r")",
+    re.IGNORECASE,
+)
+ARTIFACT_URL_RE = re.compile(
+    r"https?://[^\s`\"'<>]+?\.(?:" + "|".join(ARTIFACT_EXTENSIONS) + r")(?:\?[^\s`\"'<>]*)?",
+    re.IGNORECASE,
+)
+
+
+def _artifact_kind(value: str) -> str:
+    ext = value.split("?", 1)[0].rsplit(".", 1)[-1].lower() if "." in value else ""
+    if ext in {"png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "ico"}:
+        return "image"
+    if ext in {"mp4", "webm", "mov", "avi", "mkv"}:
+        return "video"
+    if ext in {"pptx", "ppt"}:
+        return "presentation"
+    if ext in {"docx", "doc", "pdf", "txt", "md"}:
+        return "document"
+    if ext in {"xlsx", "xls"}:
+        return "spreadsheet"
+    return "file"
+
+
+def _media_asset_id(session_id: str, kind: str, path: str = "", url: str = "") -> str:
+    raw = "|".join([session_id or "", kind or "", path or "", url or ""])
+    digest = hashlib.sha256(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    prefix = "img" if kind == "image" else "vid" if kind == "video" else "media"
+    return f"{prefix}_{digest}"
+
+
+def _media_group_id(source: str, run_id: int | None = None) -> str:
+    if run_id:
+        return f"{source}_run_{run_id}"
+    return f"{source}_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+
+def _register_media_asset_locked(
+    *,
+    session_id: str,
+    kind: str,
+    source: str,
+    path: str = "",
+    url: str = "",
+    group_id: str = "",
+    employee_id: str = "",
+    metadata: dict | None = None,
+    created_at: float | None = None,
+) -> str | None:
+    """Register an image/video artifact in media_assets.
+
+    The caller must hold session_db._lock; SessionDB uses a non-reentrant lock.
+    """
+    kind = (kind or "").strip().lower()
+    if kind not in {"image", "video"}:
+        return None
+    path = str(path or "").strip()
+    url = str(url or "").strip()
+    if not path and not url:
+        return None
+    asset_id = _media_asset_id(session_id, kind, path, url)
+    session_db._conn.execute(
+        """
+        INSERT INTO media_assets (
+            id, session_id, employee_id, kind, source, path, url,
+            group_id, created_at, metadata_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            employee_id = COALESCE(excluded.employee_id, media_assets.employee_id),
+            source = excluded.source,
+            group_id = COALESCE(NULLIF(excluded.group_id, ''), media_assets.group_id),
+            created_at = excluded.created_at,
+            metadata_json = excluded.metadata_json
+        """,
+        (
+            asset_id,
+            session_id,
+            employee_id or None,
+            kind,
+            source or None,
+            path or None,
+            url or None,
+            group_id or None,
+            float(created_at or time.time()),
+            _ledger_json(metadata or {}),
+        ),
+    )
+    return asset_id
+
+
+def _walk_artifact_values(value: Any, seen: set[int] | None = None):
+    if seen is None:
+        seen = set()
+    if value is None:
+        return
+    obj_id = id(value)
+    if obj_id in seen:
+        return
+    if isinstance(value, (dict, list, tuple, set)):
+        seen.add(obj_id)
+    if isinstance(value, dict):
+        for item in value.values():
+            yield from _walk_artifact_values(item, seen)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _walk_artifact_values(item, seen)
+        return
+    text = str(value)
+    for match in ARTIFACT_PATH_RE.findall(text):
+        yield {"path": match, "url": "", "kind": _artifact_kind(match)}
+    for match in ARTIFACT_URL_RE.findall(text):
+        yield {"path": "", "url": match, "kind": _artifact_kind(match)}
+
+
+def _extract_artifacts(value: Any) -> list[dict]:
+    artifacts = []
+    seen = set()
+    for item in _walk_artifact_values(value):
+        key = item.get("path") or item.get("url")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        path = item.get("path") or ""
+        exists = 0
+        size = None
+        if path:
+            try:
+                p = Path(path)
+                exists = 1 if p.exists() else 0
+                size = p.stat().st_size if exists and p.is_file() else None
+            except Exception:
+                exists = 0
+        artifacts.append({
+            "kind": item.get("kind") or "file",
+            "path": path,
+            "url": item.get("url") or "",
+            "exists": exists,
+            "size": size,
+        })
+    return artifacts
+
+
+def _tool_result_error(result: Any) -> str:
+    if result is None:
+        return ""
+    if isinstance(result, dict):
+        for key in ("error", "detail", "message"):
+            value = result.get(key)
+            if value and ("error" in str(key).lower() or result.get("ok") is False or result.get("success") is False):
+                return _shorten_for_evidence(value, 1000)
+        if result.get("ok") is False or result.get("success") is False:
+            return _shorten_for_evidence(result, 1000)
+        return ""
+    text = str(result)
+    lowered = text.lower()
+    if "traceback" in lowered or "error:" in lowered or "exception" in lowered or "failed" in lowered:
+        return _shorten_for_evidence(text, 1000)
+    return ""
+
+
+def _status_is_start(status: str) -> bool:
+    value = str(status or "").lower()
+    return value in {"started", "start", "tool.start", "tool.started"}
+
+
+def _status_is_complete(status: str) -> bool:
+    value = str(status or "").lower()
+    return value in {"complete", "completed", "tool.complete", "tool.completed", "done", "success"}
+
+
+def _record_tool_run_evidence(evidence: dict) -> None:
+    session_id = str(evidence.get("session_id") or "")
+    tool_name = str(evidence.get("tool") or "tool")
+    status = str(evidence.get("status") or "")
+    tool_call_id = str(evidence.get("tool_call_id") or "")
+    if not session_id or not tool_name:
+        return
+    try:
+        run_id = int(evidence.get("run_id") or 0)
+    except Exception:
+        run_id = 0
+    now = time.time()
+    args_json = _ledger_json(evidence.get("args"))
+    result_value = evidence.get("result")
+    result_json = _ledger_json(result_value)
+    error = str(evidence.get("error") or "")
+    artifacts = _extract_artifacts(result_value)
+    success = None
+    if _status_is_complete(status):
+        success = 0 if error else 1
+
+    with session_db._lock:
+        row = None
+        if tool_call_id:
+            row = session_db._conn.execute(
+                """
+                SELECT id FROM tool_runs
+                WHERE session_id = ? AND run_id = ? AND tool_call_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (session_id, run_id, tool_call_id),
+            ).fetchone()
+        if not row and _status_is_complete(status):
+            row = session_db._conn.execute(
+                """
+                SELECT id FROM tool_runs
+                WHERE session_id = ? AND run_id = ? AND tool_name = ? AND completed_at IS NULL
+                ORDER BY id DESC LIMIT 1
+                """,
+                (session_id, run_id, tool_name),
+            ).fetchone()
+
+        if row:
+            tool_run_id = int(row["id"])
+            session_db._conn.execute(
+                """
+                UPDATE tool_runs
+                SET status = ?,
+                    args_json = COALESCE(NULLIF(?, 'null'), args_json),
+                    result_json = CASE WHEN ? != 'null' THEN ? ELSE result_json END,
+                    completed_at = CASE WHEN ? THEN ? ELSE completed_at END,
+                    success = CASE WHEN ? THEN ? ELSE success END,
+                    error = CASE WHEN ? != '' THEN ? ELSE error END,
+                    evidence_summary = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    args_json,
+                    result_json,
+                    result_json,
+                    1 if _status_is_complete(status) else 0,
+                    now,
+                    1 if _status_is_complete(status) else 0,
+                    success,
+                    error,
+                    error,
+                    _shorten_for_evidence(evidence.get("command") or tool_name, 500),
+                    tool_run_id,
+                ),
+            )
+        else:
+            cursor = session_db._conn.execute(
+                """
+                INSERT INTO tool_runs (
+                    session_id, run_id, tool_call_id, tool_name, status,
+                    args_json, result_json, started_at, completed_at,
+                    success, error, evidence_summary
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    run_id,
+                    tool_call_id or None,
+                    tool_name,
+                    status,
+                    args_json,
+                    result_json if result_json != "null" else None,
+                    now if _status_is_start(status) or not _status_is_complete(status) else None,
+                    now if _status_is_complete(status) else None,
+                    success,
+                    error or None,
+                    _shorten_for_evidence(evidence.get("command") or tool_name, 500),
+                ),
+            )
+            tool_run_id = int(cursor.lastrowid)
+
+        for artifact in artifacts:
+            artifact_kind = artifact.get("kind") or "file"
+            artifact_path = artifact.get("path") or None
+            artifact_url = artifact.get("url") or None
+            session_db._conn.execute(
+                """
+                INSERT INTO artifacts (
+                    tool_run_id, session_id, run_id, kind, path, url,
+                    exists_flag, size, created_at, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    tool_run_id,
+                    session_id,
+                    run_id,
+                    artifact_kind,
+                    artifact_path,
+                    artifact_url,
+                    int(artifact.get("exists") or 0),
+                    artifact.get("size"),
+                    now,
+                    _ledger_json({"source": tool_name}),
+                ),
+            )
+            _register_media_asset_locked(
+                session_id=session_id,
+                kind=artifact_kind,
+                source="tool",
+                path=artifact_path or "",
+                url=artifact_url or "",
+                group_id=_media_group_id("tool", run_id),
+                metadata={
+                    "tool": tool_name,
+                    "tool_run_id": tool_run_id,
+                    "run_id": run_id,
+                    "exists": int(artifact.get("exists") or 0),
+                    "size": artifact.get("size"),
+                },
+                created_at=now,
+            )
+        session_db._conn.commit()
+
+
+def _turn_ledger_summary(session_id: str, run_id: int) -> dict:
+    summary = {"tool_runs": 0, "completed": 0, "successful": 0, "artifacts": 0, "existing_artifacts": 0}
+    try:
+        with session_db._lock:
+            row = session_db._conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS tool_runs,
+                    SUM(CASE WHEN completed_at IS NOT NULL THEN 1 ELSE 0 END) AS completed,
+                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS successful
+                FROM tool_runs
+                WHERE session_id = ? AND run_id = ?
+                """,
+                (session_id, run_id),
+            ).fetchone()
+            art = session_db._conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS artifacts,
+                    SUM(CASE WHEN exists_flag = 1 OR url IS NOT NULL THEN 1 ELSE 0 END) AS existing_artifacts
+                FROM artifacts
+                WHERE session_id = ? AND run_id = ?
+                """,
+                (session_id, run_id),
+            ).fetchone()
+        if row:
+            summary["tool_runs"] = int(row["tool_runs"] or 0)
+            summary["completed"] = int(row["completed"] or 0)
+            summary["successful"] = int(row["successful"] or 0)
+        if art:
+            summary["artifacts"] = int(art["artifacts"] or 0)
+            summary["existing_artifacts"] = int(art["existing_artifacts"] or 0)
+    except Exception as e:
+        log_msg("WARN", f"[{session_id[:12]}] Load turn ledger summary failed: {e}")
+    return summary
+
+
+def _missing_local_artifact_paths(text: str) -> list[str]:
+    missing = []
+    for path in ARTIFACT_PATH_RE.findall(str(text or "")):
+        try:
+            if not Path(path).exists():
+                missing.append(path)
+        except Exception:
+            missing.append(path)
+    return missing
+
+
+def _soft_unverified_completion_text(reason: str, summary: dict | None = None) -> str:
+    summary = summary or {}
+    if reason == "missing_path":
+        return (
+            "我刚才的回复里出现了无法验证的本地文件路径，所以先不把它当成已完成结果。"
+            "为了避免误导你，我已拦下这次结果；你可以让我重新执行一次，我会等工具返回真实文件后再展示。"
+        )
+    if reason == "no_verified_tool":
+        if int(summary.get("tool_runs") or 0) > 0:
+            return (
+                "这一步我看到有工具动作开始了，但没有拿到可验证的完成结果，"
+                "所以先不说已经完成。你可以让我重试，或让我先检查对应工具/API配置。"
+            )
+        return (
+            "这一步需要真实执行，但本轮没有拿到可验证的工具结果。"
+            "我先不把它说成已完成；你可以让我重新执行，我会基于工具返回结果继续。"
+        )
+    return (
+        "这次结果缺少可验证证据，我先不把它当成完成。"
+        "你可以让我重试或检查工具配置。"
+    )
+
 def _tool_event_evidence(event: dict, session_id: str, run_id: int) -> dict | None:
     if not _tool_event_is_real_action(event):
         return None
@@ -1523,7 +2262,11 @@ def _tool_event_evidence(event: dict, session_id: str, run_id: int) -> dict | No
         "run_id": run_id,
         "tool": str(event.get("name") or event.get("tool") or event.get("tool_name") or "tool"),
         "status": str(event.get("status") or event.get("event") or ""),
+        "tool_call_id": str(event.get("tool_call_id") or event.get("call_id") or ""),
         "command": _shorten_for_evidence(event.get("command") or event.get("input") or event.get("message") or event.get("text")),
+        "args": _json_safe_for_ledger(event.get("__args")),
+        "result": _json_safe_for_ledger(event.get("__result")),
+        "error": _tool_result_error(event.get("__result")),
     }
 
 def _write_execution_evidence(session_id: str, run_id: int, evidence: dict) -> None:
@@ -1533,6 +2276,7 @@ def _write_execution_evidence(session_id: str, run_id: int, evidence: dict) -> N
         path = EXECUTION_EVIDENCE_DIR / f"{sid}.jsonl"
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(evidence, ensure_ascii=False) + "\n")
+        _record_tool_run_evidence(evidence)
     except Exception as e:
         log_msg("WARN", f"[{session_id[:12]}] Failed to write execution evidence: {e}")
 
@@ -1659,6 +2403,109 @@ def _replace_messages_preserving_timestamps(session_id: str, messages: list[dict
             session_db._conn.commit()
     except Exception as e:
         log_msg("WARN", f"[{session_id[:12]}] Restore old timestamps failed: {e}")
+
+
+def _runtime_message_matches_deleted(msg: dict, message_id: int, deleted_meta: dict | None) -> bool:
+    if str(msg.get("id") or "") == str(message_id):
+        return True
+    if not deleted_meta:
+        return False
+
+    deleted_text = str(deleted_meta.get("text") or "").strip()
+    if not deleted_text:
+        return False
+
+    role = str(msg.get("role") or "")
+    deleted_role = str(deleted_meta.get("role") or "")
+    role_aliases = {deleted_role}
+    if deleted_role == "assistant":
+        role_aliases.add("agent")
+    elif deleted_role == "agent":
+        role_aliases.add("assistant")
+    if role and role_aliases and role not in role_aliases:
+        return False
+
+    text = _message_text(msg.get("content")).strip()
+    if text != deleted_text:
+        return False
+
+    deleted_ts = deleted_meta.get("timestamp")
+    msg_ts = msg.get("timestamp")
+    if deleted_ts is None or msg_ts is None:
+        return True
+    try:
+        return abs(float(msg_ts) - float(deleted_ts)) <= 2.0
+    except (TypeError, ValueError):
+        return True
+
+
+def _purge_deleted_message_from_runtime(session_ids: list[str], message_id: int, deleted_meta: dict | None) -> None:
+    affected_ids = {sid for sid in session_ids if sid}
+    if deleted_meta and deleted_meta.get("session_id"):
+        affected_ids.add(str(deleted_meta.get("session_id")))
+
+    with session_lock:
+        for sid in list(affected_ids):
+            session = sessions.get(sid)
+            if not session:
+                continue
+            if isinstance(session.get("history"), list):
+                session["history"] = [
+                    msg for msg in session["history"]
+                    if not _runtime_message_matches_deleted(msg, message_id, deleted_meta)
+                ]
+
+            thread = session.get("agent_thread")
+            is_running = bool(session.get("running")) or bool(thread and thread.is_alive())
+            if not is_running:
+                session["agent"] = None
+                session["history"] = _load_history_from_db(sid)
+
+    with prewarm_lock:
+        for sid in affected_ids:
+            prewarming_sessions.discard(sid)
+
+
+def _delete_session_message(session_id: str, message_id: int) -> bool:
+    """Delete a single persisted message from a session or its lineage."""
+    session_ids = [session_id]
+    lineage = getattr(session_db, "_session_lineage_root_to_tip", None)
+    if callable(lineage):
+        try:
+            session_ids = lineage(session_id) or [session_id]
+        except Exception as e:
+            log_msg("WARN", f"[{session_id[:12]}] Load lineage for message delete failed: {e}")
+    placeholders = ",".join("?" for _ in session_ids)
+    with session_db._lock:
+        row = session_db._conn.execute(
+            f"SELECT session_id, role, content, timestamp FROM messages WHERE id = ? AND session_id IN ({placeholders})",
+            (message_id, *session_ids),
+        ).fetchone()
+        if not row:
+            return False
+        deleted_session_id = row["session_id"]
+        deleted_content = row["content"]
+        decode = getattr(session_db, "_decode_content", None)
+        if callable(decode):
+            try:
+                deleted_content = decode(deleted_content)
+            except Exception:
+                pass
+        deleted_meta = {
+            "session_id": deleted_session_id,
+            "role": row["role"],
+            "content": deleted_content,
+            "text": _message_text(deleted_content),
+            "timestamp": row["timestamp"],
+        }
+        session_db._conn.execute("DELETE FROM messages WHERE id = ?", (message_id,))
+        session_db._conn.execute(
+            "UPDATE sessions SET message_count = (SELECT COUNT(*) FROM messages WHERE session_id = ?) WHERE id = ?",
+            (deleted_session_id, deleted_session_id),
+        )
+        session_db._conn.commit()
+    _purge_deleted_message_from_runtime(session_ids, message_id, deleted_meta)
+    return True
 
 def _default_title_from_history(history: list[dict], fallback: str = "") -> str:
     for msg in history or []:
@@ -2049,6 +2896,7 @@ def _replace_state_db_from_snapshot(snapshot_state_db: Path) -> None:
         except Exception as e:
             log_msg("WARN", f"Failed to remove SQLite sidecar {suffix}: {e}")
     session_db = SessionDB(state_path)
+    _ensure_execution_ledger_tables()
 
 
 def _restore_version_snapshot(snapshot_id: str, targets: Any = None) -> dict:
@@ -2143,8 +2991,75 @@ def _emit_session_event(session_id: str, event: dict):
         except Exception as e:
             log_msg("WARN", f"[{session_id[:12]}] event callback failed: {e}")
 
+
+def _desktop_tool_progress_event(event_type, name=None, preview=None, args=None, **kwargs) -> None:
+    _emit_session_event(
+        kwargs.pop("__session_id"),
+        {
+            "type": "tool",
+            "event": str(event_type),
+            "name": str(name or ""),
+            "status": str(kwargs.get("status") or event_type),
+            "detail": str(preview or kwargs.get("summary") or ""),
+            "__args": args,
+            "__result": kwargs.get("result"),
+        },
+    )
+
+
+def _desktop_tool_start_event(session_id: str, tool_call_id, name, args) -> None:
+    _emit_session_event(
+        session_id,
+        {
+            "type": "tool",
+            "event": "tool.start",
+            "name": str(name),
+            "status": "started",
+            "tool_call_id": str(tool_call_id or ""),
+            "__args": args,
+        },
+    )
+
+
+def _desktop_tool_complete_event(session_id: str, tool_call_id, name, args, result) -> None:
+    _emit_session_event(
+        session_id,
+        {
+            "type": "tool",
+            "event": "tool.complete",
+            "name": str(name),
+            "status": "complete",
+            "tool_call_id": str(tool_call_id or ""),
+            "__args": args,
+            "__result": result,
+        },
+    )
+
 def _combine_system_prompts(*parts: str | None) -> str:
     return "\n\n".join(str(part).strip() for part in parts if str(part or "").strip())
+
+def _desktop_runtime_prompt_parts(session_id: str) -> tuple[str, str, str]:
+    cfg = load_config()
+    agent_cfg = cfg.get("agent", {})
+    base_prompt = _combine_system_prompts(
+        agent_cfg.get("system_prompt", ""),
+        _desktop_runtime_system_prompt(),
+        _work_dir_prompt(session_id),
+        _recent_media_prompt(session_id),
+    )
+    employee_prompt = ""
+    emp = _find_employee_by_session(session_id)
+    if emp:
+        employee_prompt = _build_agent_prompt(emp) or ""
+    signature = json.dumps(
+        {
+            "base": base_prompt,
+            "employee": employee_prompt,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return base_prompt, employee_prompt, signature
 
 def _desktop_runtime_system_prompt() -> str:
     desktop_path = Path.home() / "Desktop"
@@ -2180,11 +3095,8 @@ def _desktop_runtime_system_prompt() -> str:
 
 def create_agent(session_id: str) -> AIAgent:
     cfg = load_config()
-    agent_cfg = cfg.get("agent", {})
-    system_prompt = _combine_system_prompts(
-        agent_cfg.get("system_prompt", ""),
-        _desktop_runtime_system_prompt(),
-    )
+    _register_session_work_dir(session_id)
+    system_prompt, employee_prompt, prompt_signature = _desktop_runtime_prompt_parts(session_id)
     model, runtime = _resolve_desktop_runtime(cfg)
     enabled_toolsets = _load_enabled_toolsets(cfg)
     log_msg(
@@ -2219,21 +3131,14 @@ def create_agent(session_id: str) -> AIAgent:
         stream_delta_callback=lambda delta: _emit_session_event(
             session_id, {"type": "delta", "text": delta}
         ) if delta else None,
-        tool_progress_callback=lambda event_type, name=None, preview=None, args=None, **kwargs: _emit_session_event(
-            session_id,
-            {
-                "type": "tool",
-                "event": str(event_type),
-                "name": str(name or ""),
-                "status": str(kwargs.get("status") or event_type),
-                "detail": str(preview or kwargs.get("summary") or ""),
-            },
+        tool_progress_callback=lambda event_type, name=None, preview=None, args=None, **kwargs: _desktop_tool_progress_event(
+            event_type, name=name, preview=preview, args=args, __session_id=session_id, **kwargs
         ),
-        tool_start_callback=lambda _tc_id, name, _args: _emit_session_event(
-            session_id, {"type": "tool", "event": "tool.start", "name": str(name), "status": "started"}
+        tool_start_callback=lambda _tc_id, name, _args: _desktop_tool_start_event(
+            session_id, _tc_id, name, _args
         ),
-        tool_complete_callback=lambda _tc_id, name, _args, _result: _emit_session_event(
-            session_id, {"type": "tool", "event": "tool.complete", "name": str(name), "status": "complete"}
+        tool_complete_callback=lambda _tc_id, name, _args, _result: _desktop_tool_complete_event(
+            session_id, _tc_id, name, _args, _result
         ),
         thinking_callback=lambda text: _emit_session_event(
             session_id, {"type": "status", "text": str(text or "thinking")}
@@ -2246,6 +3151,7 @@ def create_agent(session_id: str) -> AIAgent:
         ),
     )
     agent._desktop_base_system_prompt = system_prompt
+    agent._desktop_prompt_signature = prompt_signature
     agent._tool_use_enforcement = True
     _install_desktop_background_review_scheduler(agent, session_id)
     invalidate_prompt = getattr(agent, "_invalidate_system_prompt", None)
@@ -2266,11 +3172,28 @@ def create_agent(session_id: str) -> AIAgent:
 def _apply_employee_prompt_to_agent(agent: AIAgent, session_id: str) -> None:
     emp = _find_employee_by_session(session_id)
     if not emp:
+        base_prompt = getattr(agent, "_desktop_base_system_prompt", "") or agent.ephemeral_system_prompt
+        agent.ephemeral_system_prompt = base_prompt or None
         return
     sp = _build_agent_prompt(emp)
     if sp:
         base_prompt = getattr(agent, "_desktop_base_system_prompt", "") or agent.ephemeral_system_prompt
         agent.ephemeral_system_prompt = _combine_system_prompts(base_prompt, sp)
+
+def _refresh_agent_runtime_prompt(agent: AIAgent, session_id: str) -> None:
+    _register_session_work_dir(session_id)
+    base_prompt, employee_prompt, prompt_signature = _desktop_runtime_prompt_parts(session_id)
+    if getattr(agent, "_desktop_prompt_signature", None) == prompt_signature:
+        return
+    agent._desktop_base_system_prompt = base_prompt
+    agent._desktop_prompt_signature = prompt_signature
+    agent.ephemeral_system_prompt = _combine_system_prompts(base_prompt, employee_prompt) or None
+    invalidate_prompt = getattr(agent, "_invalidate_system_prompt", None)
+    if callable(invalidate_prompt):
+        try:
+            invalidate_prompt()
+        except Exception:
+            pass
 
 def _prewarm_session_agent(session_id: str, reason: str = "startup") -> None:
     """Create the agent in the background so the first user message starts faster."""
@@ -2351,7 +3274,10 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 @app.get("/")
 async def root():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 # Serve static files
 if STATIC_DIR.exists():
@@ -2430,6 +3356,7 @@ async def create_employee(request: Request):
             "name": name,
             "emoji": (body.get("emoji") or "😊").strip(),
             "role": (body.get("role") or "").strip(),
+            "work_dir": _normalize_work_dir(body.get("work_dir") or "") if (body.get("work_dir") or "").strip() else "",
             "personality": (body.get("personality") or "").strip(),
             "work_content": (body.get("work_content") or "").strip(),
             "work_steps": (body.get("work_steps") or "").strip(),
@@ -2483,11 +3410,14 @@ async def update_employee(employee_id: str, request: Request):
         data = _load_employees_index()
         for emp in data.get("employees", []):
             if emp["id"] == employee_id:
-                for key in ["name", "emoji", "role", "personality",
+                for key in ["name", "emoji", "role", "work_dir", "personality",
                            "goal", "work_content", "work_steps", "self_growth",
                            "notes", "work_mode", "session_id"]:
                     if key in body:
-                        emp[key] = (body[key] or "").strip()
+                        if key == "work_dir":
+                            emp[key] = _normalize_work_dir(body.get(key) or "") if (body.get(key) or "").strip() else ""
+                        else:
+                            emp[key] = (body[key] or "").strip()
                 if "workflows" in body and isinstance(body["workflows"], list):
                     emp["workflows"] = body["workflows"]
                 _ensure_employee_workflows(emp)
@@ -2495,6 +3425,8 @@ async def update_employee(employee_id: str, request: Request):
                 _employee_profile_path(employee_id).write_text(
                     _build_profile_md(emp), encoding="utf-8"
                 )
+                if emp.get("session_id"):
+                    _register_session_work_dir(str(emp.get("session_id")), reset=True)
                 emp["max_slots"] = MAX_EMPLOYEES
                 return {"ok": True, "employee": emp}
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -2903,7 +3835,179 @@ async def api_config():
         "provider": provider,
         "base_url": base_url,
         "max_turns": _cfg_max_turns(cfg, 90),
+        "global_work_dir": _get_global_work_dir(),
     }
+
+@app.put("/api/workspace")
+async def api_set_workspace(request: Request):
+    try:
+        body = await request.json()
+        work_dir = _set_global_work_dir(body.get("work_dir") or "", create=bool(body.get("create")))
+        for sid in list(sessions.keys()):
+            _register_session_work_dir(sid, reset=True)
+        return {"ok": True, "global_work_dir": work_dir}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+@app.post("/api/workspace/open")
+async def api_open_workspace():
+    work_dir = _get_global_work_dir()
+    if not work_dir:
+        raise HTTPException(status_code=400, detail="未设置全局工作目录")
+    target = Path(work_dir)
+    if not target.exists() or not target.is_dir():
+        raise HTTPException(status_code=404, detail="工作目录不存在")
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.Popen(["explorer.exe", str(target)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)])
+        else:
+            subprocess.Popen(["xdg-open", str(target)])
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"打开工作目录失败：{exc}")
+    return {"ok": True}
+
+@app.post("/api/workspace/choose-folder")
+async def api_choose_workspace_folder():
+    """Open a native folder picker for workspace settings."""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        root.update()
+        root.lift()
+        root.focus_force()
+        path = filedialog.askdirectory(title="选择 Hermes 工作目录")
+        root.destroy()
+        return {"ok": True, "path": path or ""}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+@app.get("/api/collab-agents")
+async def api_list_collab_agents():
+    agents = [_sanitize_collab_agent(a) for a in _load_collab_agents()]
+    return {"ok": True, "agents": agents}
+
+@app.post("/api/collab-agents")
+async def api_save_collab_agent(request: Request):
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    agent_type = str(body.get("type") or "resident").strip().lower()
+    endpoint = _normalize_collab_endpoint(body.get("endpoint") or "")
+    if not name:
+        raise HTTPException(status_code=400, detail="请填写智能体名称")
+    if agent_type not in {"resident", "coze", "http"}:
+        raise HTTPException(status_code=400, detail="暂时只支持 Resident、Coze、HTTP 三类")
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="请填写连接地址")
+
+    agents = _load_collab_agents()
+    agent_id = str(body.get("id") or "").strip()
+    existing = None
+    index = -1
+    if agent_id:
+        for i, agent in enumerate(agents):
+            if str(agent.get("id") or "") == agent_id:
+                existing = agent
+                index = i
+                break
+    if not agent_id:
+        agent_id = "collab-" + uuid.uuid4().hex[:10]
+
+    token = str(body.get("token") or "").strip()
+    if existing and not token:
+        token = str(existing.get("token") or "")
+    now = datetime.now().isoformat()
+    saved = {
+        **(existing or {}),
+        "id": agent_id,
+        "name": name,
+        "type": agent_type,
+        "endpoint": endpoint,
+        "token": token,
+        "notes": str(body.get("notes") or "").strip(),
+        "updated_at": now,
+    }
+    if "created_at" not in saved:
+        saved["created_at"] = now
+    if index >= 0:
+        agents[index] = saved
+    else:
+        agents.append(saved)
+    _save_collab_agents(agents)
+    return {"ok": True, "agent": _sanitize_collab_agent(saved)}
+
+@app.delete("/api/collab-agents/{agent_id}")
+async def api_delete_collab_agent(agent_id: str):
+    agents = _load_collab_agents()
+    kept = [a for a in agents if str(a.get("id") or "") != agent_id]
+    if len(kept) == len(agents):
+        raise HTTPException(status_code=404, detail="未找到协作智能体")
+    _save_collab_agents(kept)
+    return {"ok": True}
+
+@app.post("/api/collab-agents/{agent_id}/test")
+async def api_test_collab_agent(agent_id: str):
+    agents, agent, index = _find_collab_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="未找到协作智能体")
+
+    endpoint = _normalize_collab_endpoint(agent.get("endpoint") or "")
+    token = str(agent.get("token") or "")
+    agent_type = str(agent.get("type") or "resident").lower()
+    now = datetime.now().isoformat()
+
+    try:
+        card = None
+        message = "连接正常"
+        if agent_type == "resident":
+            errors: list[str] = []
+            for suffix in ["/.well-known/agent.json", "/agent-card"]:
+                try:
+                    card = _fetch_json_url(endpoint + suffix, token=token)
+                    break
+                except Exception as exc:
+                    errors.append(f"{suffix}: {exc}")
+            if card is None:
+                raise RuntimeError("; ".join(errors) or "无法读取 AgentCard")
+            message = f"已读取 AgentCard：{card.get('name') or agent.get('name')}"
+        elif agent_type == "http":
+            card = _fetch_json_url(endpoint, token=token)
+            message = "HTTP 地址可访问"
+        elif agent_type == "coze":
+            card = {"name": agent.get("name"), "type": "coze", "endpoint": endpoint}
+            message = "Coze 连接信息已保存，实际调用将在下一阶段接入"
+
+        agent["last_status"] = "online"
+        agent["last_error"] = ""
+        agent["last_checked_at"] = now
+        if card:
+            agent["agent_card"] = card
+        agents[index] = agent
+        _save_collab_agents(agents)
+        return {
+            "ok": True,
+            "status": "online",
+            "message": message,
+            "agent": _sanitize_collab_agent(agent),
+            "agent_card": card,
+        }
+    except (HTTPError, URLError, TimeoutError, RuntimeError, ValueError) as exc:
+        agent["last_status"] = "error"
+        agent["last_error"] = str(exc)
+        agent["last_checked_at"] = now
+        agents[index] = agent
+        _save_collab_agents(agents)
+        return {
+            "ok": False,
+            "status": "error",
+            "error": str(exc),
+            "agent": _sanitize_collab_agent(agent),
+        }
 
 @app.get("/api/diagnostics/runtime")
 async def api_runtime_diagnostics():
@@ -3135,6 +4239,25 @@ async def delete_session(session_id: str):
         log_msg("WARN", f"[{session_id[:12]}] DB delete failed: {e}")
     return {"ok": True}
 
+
+@app.delete("/api/session/{session_id}/message/{message_id}")
+async def delete_message(session_id: str, message_id: int):
+    try:
+        session_id = _validate_session_id(session_id)
+    except HTTPException:
+        raise
+    if message_id <= 0:
+        raise HTTPException(status_code=400, detail="Invalid message id")
+    try:
+        deleted = _delete_session_message(session_id, message_id)
+    except Exception as e:
+        log_msg("ERROR", f"[{session_id[:12]}] Delete message {message_id} failed: {e}")
+        raise HTTPException(status_code=500, detail="Delete message failed")
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Message not found")
+    log_msg("INFO", f"[{session_id[:12]}] Deleted message {message_id}")
+    return {"ok": True, "message_id": message_id}
+
 @app.post("/api/upload/{session_id}")
 async def upload_file(session_id: str, file: UploadFile = File(...)):
     session_dir = get_session_dir(session_id) / "uploads"
@@ -3154,10 +4277,33 @@ async def upload_file(session_id: str, file: UploadFile = File(...)):
     with open(filepath, "wb") as f:
         f.write(content)
 
+    kind = _artifact_kind(str(filepath))
+    asset_id = None
+    if kind in {"image", "video"}:
+        try:
+            with session_db._lock:
+                asset_id = _register_media_asset_locked(
+                    session_id=session_id,
+                    kind=kind,
+                    source="upload",
+                    path=str(filepath),
+                    group_id=_media_group_id("upload"),
+                    metadata={
+                        "filename": safe_name,
+                        "content_type": file.content_type,
+                        "size": len(content),
+                    },
+                )
+                session_db._conn.commit()
+        except Exception as e:
+            log_msg("WARN", f"[{session_id[:12]}] Register uploaded media failed: {e}")
+
     return {
         "filename": safe_name,
         "path": str(filepath),
         "size": len(content),
+        "type": kind,
+        "asset_id": asset_id,
     }
 
 @app.get("/api/files/{session_id}")
@@ -3223,6 +4369,214 @@ async def open_media_cache_location(filepath: str):
     return {"ok": True, "path": str(target)}
 
 
+@app.get("/api/media/assets/{session_id}")
+async def list_media_assets(session_id: str, kind: str = "", limit: int = 20):
+    """List recent image/video assets for a conversation."""
+    sid = _validate_session_id(session_id)
+    normalized_kind = (kind or "").strip().lower()
+    if normalized_kind and normalized_kind not in {"image", "video"}:
+        raise HTTPException(status_code=400, detail="Invalid media kind")
+    limit = max(1, min(int(limit or 20), 100))
+    try:
+        with session_db._lock:
+            if normalized_kind:
+                rows = session_db._conn.execute(
+                    """
+                    SELECT id, session_id, employee_id, kind, source, path, url,
+                           group_id, created_at, metadata_json
+                    FROM media_assets
+                    WHERE session_id = ? AND kind = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (sid, normalized_kind, limit),
+                ).fetchall()
+            else:
+                rows = session_db._conn.execute(
+                    """
+                    SELECT id, session_id, employee_id, kind, source, path, url,
+                           group_id, created_at, metadata_json
+                    FROM media_assets
+                    WHERE session_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (sid, limit),
+                ).fetchall()
+        assets = []
+        for row in rows:
+            item = dict(row)
+            item["exists"] = bool(item.get("path") and Path(item["path"]).exists())
+            try:
+                item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            except Exception:
+                item["metadata"] = {}
+            assets.append(item)
+        return {"assets": assets}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log_msg("ERROR", f"[{sid[:12]}] List media assets failed: {exc}")
+        raise HTTPException(status_code=500, detail="List media assets failed")
+
+
+# ── Prompt Snapshot Viewer ───────────────────────────────────────────
+PROMPT_SNAPSHOTS_DIR = HERMES_HOME / "logs" / "llm_prompt_snapshots"
+_prompt_snapshots_cache: dict = {"ts": 0, "data": None}
+
+
+@app.get("/api/prompt-snapshots")
+async def list_prompt_snapshots():
+    """List all LLM prompt snapshots with metadata (no messages).
+
+    Uses a 5-second in-memory cache to avoid re-reading ~400 files on
+    every refresh.
+    """
+    now = time.time()
+    cached = _prompt_snapshots_cache.get("data")
+    if cached is not None and (now - _prompt_snapshots_cache.get("ts", 0)) < 5:
+        return cached
+
+    files = []
+    total_on_disk = 0
+    if PROMPT_SNAPSHOTS_DIR.exists():
+        all_names = sorted(PROMPT_SNAPSHOTS_DIR.glob("*.json"), reverse=True)
+        total_on_disk = len(all_names)
+        for f in all_names[:500]:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                has_resp = bool(data.get("response"))
+                files.append({
+                    "filename": f.name,
+                    "size": f.stat().st_size,
+                    "created_at": data.get("created_at", ""),
+                    "session_id": data.get("session_id", ""),
+                    "model": data.get("model", ""),
+                    "provider": data.get("provider", ""),
+                    "api_call_count": data.get("api_call_count", 0),
+                    "original_user_message": data.get("original_user_message", ""),
+                    "approx_tokens": data.get("approx_tokens", 0),
+                    "request_char_count": data.get("request_char_count", 0),
+                    "wire_message_count": data.get("wire_message_count", 0),
+                    "tool_count": data.get("tool_count", 0),
+                    "api_mode": data.get("api_mode", ""),
+                    "has_response": has_resp,
+                    "response_finish_reason": data.get("response", {}).get("finish_reason", "") if has_resp else "",
+                    "response_tool_call_count": len(data.get("response", {}).get("tool_calls", [])) if has_resp else 0,
+                })
+            except Exception:
+                continue
+    result = {
+        "total": total_on_disk,
+        "shown": len(files),
+        "files": files,
+    }
+    _prompt_snapshots_cache["ts"] = now
+    _prompt_snapshots_cache["data"] = result
+    return result
+
+
+@app.get("/api/prompt-snapshots/{filename}")
+async def get_prompt_snapshot(filename: str):
+    """Get a specific prompt snapshot (full content)."""
+    target = PROMPT_SNAPSHOTS_DIR / filename
+    try:
+        target.resolve().relative_to(PROMPT_SNAPSHOTS_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Snapshot not found")
+    try:
+        data = json.loads(target.read_text(encoding="utf-8"))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to read snapshot")
+    return {"filename": filename, "data": data}
+
+
+@app.get("/api/prompt-snapshots-viewer")
+async def serve_prompt_viewer():
+    """Serve the prompt snapshot viewer HTML page."""
+    viewer_path = STATIC_DIR / "prompt-viewer.html"
+    if not viewer_path.exists():
+        raise HTTPException(status_code=404, detail="Viewer page not found")
+    return FileResponse(viewer_path)
+
+
+# ── Sync prompts to Console ──────────────────────────────────────────
+@app.post("/api/prompts/sync-to-console")
+async def sync_prompts_to_console():
+    """Scan local snapshots and sync them to the Hermes Console server."""
+    import gzip as _gzip
+    import urllib.request as _ur
+    import ssl as _ssl
+
+    # 1. Resolve console URL and device_id from config
+    cfg = load_hermes_config()
+    console_url = (cfg.get("console", {}) or {}).get("url", "").strip().rstrip("/")
+    if not console_url:
+        raise HTTPException(status_code=400, detail="console.url not configured")
+
+    device_id = (cfg.get("console", {}) or {}).get("device_id", "").strip()
+    if not device_id:
+        import uuid
+        device_id = str(uuid.uuid4())
+        # Persist back to config.yaml
+        _cfg_path = HERMES_HOME / "config.yaml"
+        try:
+            _raw = _cfg_path.read_text(encoding="utf-8")
+            _lines = _raw.splitlines(keepends=True)
+            _new_lines = []
+            for _line in _lines:
+                _new_lines.append(_line)
+                if _line.strip().startswith("device_id:") and '""' in _line:
+                    _new_lines[-1] = _line.replace('""', f'"{device_id}"')
+            _cfg_path.write_text("".join(_new_lines), encoding="utf-8")
+        except Exception:
+            pass  # best-effort persist
+
+    # 2. Collect snapshots (most recent 500)
+    snapshots = []
+    if PROMPT_SNAPSHOTS_DIR.exists():
+        for f in sorted(PROMPT_SNAPSHOTS_DIR.glob("*.json"), key=lambda x: x.stat().st_mtime, reverse=True)[:100]:
+            try:
+                snapshots.append({
+                    "filename": f.name,
+                    "data": json.loads(f.read_text(encoding="utf-8")),
+                })
+            except Exception:
+                continue
+
+    if not snapshots:
+        return {"ok": True, "synced": 0, "skipped": 0, "message": "No snapshots to sync"}
+
+    # 3. Send to console (urllib, no external deps)
+    payload = json.dumps({"device_id": device_id, "snapshots": snapshots}, ensure_ascii=False)
+    compressed = _gzip.compress(payload.encode("utf-8"))
+
+    try:
+        # Use unverified SSL context for self-signed console certs
+        try:
+            _ctx = _ssl._create_unverified_context()
+        except AttributeError:
+            _ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+            _ctx.check_hostname = False
+            _ctx.verify_mode = _ssl.CERT_NONE
+        req = _ur.Request(
+            f"{console_url}/api/prompts/sync",
+            data=compressed,
+            headers={"Content-Type": "application/octet-stream", "Content-Encoding": "gzip"},
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=60, context=_ctx) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result
+    except _ur.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:300]
+        raise HTTPException(status_code=502, detail=f"Console returned {exc.code}: {detail}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach console: {type(exc).__name__}: {exc}")
+
+
 @app.get("/api/skills")
 async def list_skills():
     """List installed skills using native hermes-agent."""
@@ -3282,6 +4636,195 @@ async def list_skills():
         log_msg("WARN", f"Skills list failed: {e}")
         return {"skills": [], "count": 0, "error": str(e)}
 
+
+_SKILL_SCAN_SKIP_PARTS = {".hub", ".quarantine", ".git", "__pycache__", "node_modules", ".venv", "venv"}
+
+
+def _clean_skill_lookup_name(name: str) -> str:
+    """Validate a user supplied skill lookup key without forcing ASCII names."""
+    safe_name = (name or "").strip()
+    if not safe_name or len(safe_name) > 180:
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+    normalized = safe_name.replace("\\", "/")
+    if normalized.startswith("/") or "\x00" in normalized:
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+    if any(part in ("", ".", "..") for part in normalized.split("/")):
+        raise HTTPException(status_code=400, detail="Invalid skill name")
+    return normalized
+
+
+def _safe_skill_dir_name(value: str, fallback: str = "skill") -> str:
+    """Create a Windows-safe directory name for an installed skill."""
+    base = (value or "").strip().replace("\\", "/").split("/")[-1]
+    base = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "-", base).strip(" .-")
+    return (base or fallback)[:120]
+
+
+def _read_skill_frontmatter(skill_md: Path) -> dict:
+    try:
+        text = skill_md.read_text(encoding="utf-8", errors="replace")[:8192]
+        if not text.startswith("---"):
+            return {}
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            return {}
+        import yaml as _yaml
+        data = _yaml.safe_load(parts[1]) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _iter_installed_skill_markdown():
+    if not SKILLS_DIR.exists():
+        return
+    for skill_md in SKILLS_DIR.rglob("SKILL.md"):
+        try:
+            rel_parts = skill_md.relative_to(SKILLS_DIR).parts
+        except ValueError:
+            continue
+        if any(part in _SKILL_SCAN_SKIP_PARTS for part in rel_parts):
+            continue
+        yield skill_md
+
+
+def _find_installed_skill_dir(name: str) -> tuple[Optional[Path], dict]:
+    safe_name = _clean_skill_lookup_name(name)
+    wanted = safe_name.casefold()
+    for skill_md in _iter_installed_skill_markdown() or []:
+        skill_dir = skill_md.parent
+        try:
+            rel_name = skill_dir.relative_to(SKILLS_DIR).as_posix()
+        except ValueError:
+            rel_name = skill_dir.name
+        fm = _read_skill_frontmatter(skill_md)
+        candidates = [skill_dir.name, rel_name, str(fm.get("name") or "")]
+        if any(candidate.casefold() == wanted for candidate in candidates if candidate):
+            return skill_dir, fm
+    return None, {}
+
+
+def _ensure_safe_skill_dir(skill_dir: Path) -> Path:
+    root = SKILLS_DIR.resolve()
+    target = skill_dir.resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Skill path is outside skills directory")
+    if target == root or not (target / "SKILL.md").exists():
+        raise HTTPException(status_code=400, detail="Invalid skill directory")
+    if any(part in {".hub", ".quarantine"} for part in target.relative_to(root).parts):
+        raise HTTPException(status_code=400, detail="Protected skill metadata cannot be removed")
+    return target
+
+
+def _cleanup_skill_lock_entries(skill_dir: Path, requested_name: str):
+    """Best-effort cleanup for hub lock records after manual/full-directory deletion."""
+    lock_path = SKILLS_DIR / ".hub" / "lock.json"
+    if not lock_path.exists():
+        return
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+        installed = data.get("installed")
+        if not isinstance(installed, dict):
+            return
+        target = skill_dir.resolve()
+        changed = False
+        for key, entry in list(installed.items()):
+            install_path = str(entry.get("install_path") or "") if isinstance(entry, dict) else ""
+            matches = key == requested_name
+            if install_path:
+                p = Path(install_path)
+                if not p.is_absolute():
+                    p = SKILLS_DIR / p
+                try:
+                    matches = matches or p.resolve() == target
+                except Exception:
+                    pass
+            if matches:
+                installed.pop(key, None)
+                changed = True
+        if changed:
+            lock_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as e:
+        log_msg("WARN", f"Skill lock cleanup failed for '{requested_name}': {e}")
+
+
+def _safe_extract_zip(zf: zipfile.ZipFile, dest: Path):
+    dest_root = dest.resolve()
+    for info in zf.infolist():
+        target = (dest / info.filename).resolve()
+        try:
+            target.relative_to(dest_root)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Unsafe zip entry: {info.filename}")
+    zf.extractall(dest)
+
+
+def _find_skill_root_in_dir(base_dir: Path) -> tuple[Path, dict]:
+    candidates = []
+    for skill_md in base_dir.rglob("SKILL.md"):
+        rel_parts = skill_md.relative_to(base_dir).parts
+        if any(part in _SKILL_SCAN_SKIP_PARTS for part in rel_parts):
+            continue
+        candidates.append(skill_md)
+    if not candidates:
+        raise HTTPException(status_code=400, detail="Skill package does not contain SKILL.md")
+    candidates.sort(key=lambda p: len(p.relative_to(base_dir).parts))
+    skill_md = candidates[0]
+    return skill_md.parent, _read_skill_frontmatter(skill_md)
+
+
+def _guess_bundle_skill_name(bundle, requested_name: str, identifier: str) -> str:
+    metadata = getattr(bundle, "metadata", None) or {}
+    for value in (
+        getattr(bundle, "name", None),
+        metadata.get("name"),
+        requested_name,
+        Path(str(identifier or "skill")).name,
+    ):
+        if value:
+            return _safe_skill_dir_name(str(value), "skill")
+    return "skill"
+
+
+def _guess_bundle_category(bundle) -> str:
+    metadata = getattr(bundle, "metadata", None) or {}
+    for value in (metadata.get("category"), getattr(bundle, "category", None)):
+        if value:
+            return _safe_skill_dir_name(str(value), "community")
+    return "community"
+
+
+@app.delete("/api/skills/{name}")
+async def delete_skill(name: str):
+    """Delete any local skill that lives under HERMES_HOME/skills."""
+    safe_name = _clean_skill_lookup_name(name)
+    skill_dir, fm = _find_installed_skill_dir(safe_name)
+
+    # Scan skills directory directly — avoid import-chain issues
+    if not skill_dir:
+        raise HTTPException(status_code=404, detail=f"Skill '{safe_name}' not found")
+
+    try:
+        safe_dir = _ensure_safe_skill_dir(skill_dir)
+        if skill_dir.is_symlink():
+            skill_dir.unlink()
+        else:
+            shutil.rmtree(safe_dir)
+        _cleanup_skill_lock_entries(safe_dir, safe_name)
+        parent = safe_dir.parent
+        if parent != SKILLS_DIR.resolve() and parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
+        display_name = str(fm.get("name") or safe_name)
+        log_msg("INFO", f"Deleted skill '{display_name}' at {safe_dir}")
+        return {"ok": True, "message": f"已删除技能：{display_name}", "path": str(safe_dir)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_msg("ERROR", f"Delete skill '{safe_name}' failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # ── Console server integration ────────────────────────────────────────
 CONSOLE_BASE_URL = os.environ.get("HERMES_CONSOLE_URL", "https://139.196.176.26")
 _httpx_verify = os.environ.get("HERMES_CONSOLE_VERIFY_SSL", "0") not in ("0", "false", "no")
@@ -3304,12 +4847,12 @@ async def get_console_square_skills():
 @app.post("/api/skills/console-install/{skill_id}")
 async def install_console_skill(skill_id: int, request: Request):
     """Download a skill ZIP from the Console server and install it locally."""
-    import shutil, zipfile as _zipfile, tempfile
+    import tempfile
     try:
         body = await request.json()
-        skill_name = body.get("name", str(skill_id))
+        requested_name = str(body.get("name", str(skill_id)))
     except Exception:
-        skill_name = str(skill_id)
+        requested_name = str(skill_id)
 
     # 1. Download from console
     try:
@@ -3323,17 +4866,26 @@ async def install_console_skill(skill_id: int, request: Request):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Download error: {e}")
 
-    # 2. Extract to skills/{skill_name}/ directory
-    skill_dir = SKILLS_DIR / skill_name
-    skill_dir.mkdir(parents=True, exist_ok=True)
+    # 2. Extract to a temporary directory, locate SKILL.md, then atomically replace the skill directory.
     try:
-        with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
-            zf.extractall(str(skill_dir))
+        SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="hermes_skill_") as tmp:
+            tmp_dir = Path(tmp)
+            with zipfile.ZipFile(BytesIO(zip_bytes)) as zf:
+                _safe_extract_zip(zf, tmp_dir)
+            skill_root, fm = _find_skill_root_in_dir(tmp_dir)
+            skill_name = _safe_skill_dir_name(str(fm.get("name") or requested_name), str(skill_id))
+            skill_dir = SKILLS_DIR / skill_name
+            if skill_dir.exists():
+                shutil.rmtree(skill_dir)
+            shutil.copytree(skill_root, skill_dir)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Extract error: {e}")
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail=f"Install error: {e}")
 
     log_msg("INFO", f"Installed skill from console: {skill_name} (id={skill_id}) to {skill_dir}")
-    return {"ok": True, "name": skill_name, "path": str(skill_dir)}
+    return {"ok": True, "name": skill_name, "path": str(skill_dir), "message": f"已安装技能：{skill_name}"}
 
 
 @app.get("/api/skills/featured")
@@ -3590,27 +5142,23 @@ async def install_skill(request: dict):
         if not bundle:
             return {"ok": False, "error": f"No source found for: {name or identifier}"}
 
-        # Scan and install
-        result = scan_skill(bundle)
-        if not should_allow_install(result):
-            return {"ok": False, "error": f"Security scan blocked: {result.summary}"}
+        quarantine_path = quarantine_bundle(bundle)
+        scan_result = scan_skill(quarantine_path)
+        allowed, reason = should_allow_install(scan_result)
+        if not allowed:
+            return {"ok": False, "error": f"Security scan blocked: {reason}"}
 
-        quarantine_bundle(bundle)
-        install_from_quarantine(bundle, force=False)
-        return {"ok": True, "name": bundle.meta.name if bundle.meta else (name or identifier)}
+        skill_name = _guess_bundle_skill_name(bundle, name, identifier)
+        category = _guess_bundle_category(bundle)
+        install_path = install_from_quarantine(quarantine_path, skill_name, category, bundle, scan_result)
+        return {
+            "ok": True,
+            "name": skill_name,
+            "path": str(install_path),
+            "message": f"已安装技能：{skill_name}",
+        }
     except Exception as e:
         log_msg("WARN", f"Install skill failed: {e}")
-        return {"ok": False, "error": str(e)}
-
-@app.delete("/api/skills/{name}")
-async def delete_skill(name: str):
-    """Uninstall a skill."""
-    try:
-        from tools.skills_hub import uninstall_skill
-        ok, msg = uninstall_skill(name)
-        return {"ok": ok, "message": msg}
-    except Exception as e:
-        log_msg("WARN", f"Uninstall skill failed: {e}")
         return {"ok": False, "error": str(e)}
 
 # ---------------------------------------------------------------------------
@@ -3736,6 +5284,8 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
         "buffered_events": [],
         "last_progress_at": time.monotonic(),
         "turn_started_at": time.monotonic(),
+        "first_delta_logged": False,
+        "first_reasoning_logged": False,
         "last_activity_label": "starting",
     }
     client_connected = True
@@ -3781,6 +5331,11 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 stream_state["last_activity_label"] = f"{tool_name} {tool_status}".strip()
             elif event_type in {"delta", "reasoning"}:
                 stream_state["last_activity_label"] = "model output"
+                marker = "first_delta_logged" if event_type == "delta" else "first_reasoning_logged"
+                if not stream_state.get(marker):
+                    stream_state[marker] = True
+                    elapsed = time.monotonic() - float(stream_state.get("turn_started_at") or time.monotonic())
+                    log_msg("INFO", f"[{session_id[:12]}] First {event_type} after {elapsed:.2f}s")
             elif event_type == "status":
                 stream_state["last_activity_label"] = str(event.get("text") or event.get("kind") or "status")
             if event.get("type") == "tool":
@@ -3803,7 +5358,11 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     buffered = list(stream_state.get("buffered_events") or [])
                     stream_state["buffered_events"] = []
                     for buffered_event in buffered:
-                        main_loop.call_soon_threadsafe(msg_queue.put_nowait, buffered_event)
+                        public_event = {
+                            k: v for k, v in buffered_event.items()
+                            if not str(k).startswith("__") and k not in {"args", "result"}
+                        }
+                        main_loop.call_soon_threadsafe(msg_queue.put_nowait, public_event)
             if event.get("type") == "delta" and event.get("text"):
                 stream_state["chunks"].append(str(event.get("text") or ""))
                 if (
@@ -3828,8 +5387,12 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     return
         except Exception:
             pass
+        public_event = {
+            k: v for k, v in event.items()
+            if not str(k).startswith("__") and k not in {"args", "result"}
+        }
         main_loop.call_soon_threadsafe(
-            msg_queue.put_nowait, event,
+            msg_queue.put_nowait, public_event,
         )
 
     try:
@@ -3845,6 +5408,8 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             stream_state["guard_required"] = _requires_real_tool_action(message)
             stream_state["last_progress_at"] = time.monotonic()
             stream_state["turn_started_at"] = stream_state["last_progress_at"]
+            stream_state["first_delta_logged"] = False
+            stream_state["first_reasoning_logged"] = False
             stream_state["last_activity_label"] = "starting"
 
             if not message:
@@ -3956,39 +5521,34 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                 thread_ident = threading.get_ident()
                 _desktop_event_runs[thread_ident] = (session_id, run_id)
                 try:
+                    _refresh_agent_runtime_prompt(session["agent"], session_id)
                     r = session["agent"].run_conversation(
                         user_message=message,
                         conversation_history=agent_history,
                         task_id=session_id,
                     )
                     evidence_count = len(stream_state.get("execution_evidence") or [])
+                    ledger_summary = _turn_ledger_summary(session_id, run_id)
                     used_real_tool = bool(stream_state.get("real_action_seen")) or _result_used_real_tool(
                         r,
                         baseline_message_count=len(persisted_user_history),
                     )
                     final_candidate = _final_text_from_result(r) if isinstance(r, dict) else ""
                     claims_unverified_execution = _assistant_claims_unverified_execution(final_candidate)
-                    if (stream_state.get("guard_required") or claims_unverified_execution) and not used_real_tool:
+                    missing_artifact_paths = _missing_local_artifact_paths(final_candidate)
+                    verified_completion = (
+                        int(ledger_summary.get("successful") or 0) > 0
+                        or int(ledger_summary.get("existing_artifacts") or 0) > 0
+                    )
+                    if missing_artifact_paths and claims_unverified_execution:
                         log_msg(
                             "WARN",
-                            f"[{session_id[:12]}] Blocked text-only execution claim for tool-required request "
-                            f"(baseline={len(persisted_user_history)}, tool_seen={bool(stream_state.get('tool_seen'))}, "
-                            f"real_action_seen={bool(stream_state.get('real_action_seen'))}, "
-                            f"guard_required={bool(stream_state.get('guard_required'))}, "
-                            f"claimed_execution={bool(claims_unverified_execution)}, "
-                            f"evidence_count={evidence_count})",
+                            f"[{session_id[:12]}] Blocked final response with missing artifact path(s): "
+                            f"{'; '.join(missing_artifact_paths[:3])}",
                         )
                         stream_state["chunks"] = []
                         stream_state["buffered_events"] = []
-                        with session_lock:
-                            current = sessions.get(session_id)
-                            if current is session:
-                                current["last_fake_execution_blocked"] = True
-                        guard_text = _execution_guard_text(
-                            bool(stream_state.get("guard_required")),
-                            bool(stream_state.get("tool_seen")),
-                            evidence_count,
-                        )
+                        guard_text = _soft_unverified_completion_text("missing_path", ledger_summary)
                         r = {
                             "messages": persisted_user_history + [
                                 {"role": "assistant", "content": guard_text}
@@ -3997,7 +5557,32 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                             "api_calls": (r or {}).get("api_calls", 1) if isinstance(r, dict) else 1,
                             "__desktop_blocked_fake_execution": True,
                             "__desktop_discard_stream": True,
-                            "__desktop_skip_persist_response": True,
+                        }
+                    elif (stream_state.get("guard_required") or claims_unverified_execution) and not (used_real_tool and verified_completion):
+                        log_msg(
+                            "WARN",
+                            f"[{session_id[:12]}] Blocked text-only execution claim for tool-required request "
+                            f"(baseline={len(persisted_user_history)}, tool_seen={bool(stream_state.get('tool_seen'))}, "
+                            f"real_action_seen={bool(stream_state.get('real_action_seen'))}, "
+                            f"guard_required={bool(stream_state.get('guard_required'))}, "
+                            f"claimed_execution={bool(claims_unverified_execution)}, "
+                            f"evidence_count={evidence_count}, ledger={ledger_summary})",
+                        )
+                        stream_state["chunks"] = []
+                        stream_state["buffered_events"] = []
+                        with session_lock:
+                            current = sessions.get(session_id)
+                            if current is session:
+                                current["last_fake_execution_blocked"] = True
+                        guard_text = _soft_unverified_completion_text("no_verified_tool", ledger_summary)
+                        r = {
+                            "messages": persisted_user_history + [
+                                {"role": "assistant", "content": guard_text}
+                            ],
+                            "final_response": guard_text,
+                            "api_calls": (r or {}).get("api_calls", 1) if isinstance(r, dict) else 1,
+                            "__desktop_blocked_fake_execution": True,
+                            "__desktop_discard_stream": True,
                         }
                     elif used_real_tool:
                         with session_lock:
@@ -4088,6 +5673,9 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     await safe_send({
                         "type": "status",
                         "kind": "heartbeat",
+                        "elapsed": elapsed,
+                        "idle": idle,
+                        "activity": activity,
                         "text": f"仍在处理（已用 {elapsed}s，距离上次事件 {idle}s）：{activity}",
                     })
                 if (
@@ -4347,6 +5935,8 @@ if __name__ == "__main__":
 
     def _preferred_desktop_python() -> str:
         candidates = [
+            HERMES_HOME / "runtime" / "python311" / "pythonw.exe",
+            HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "pythonw.exe",
             HERMES_HOME / "runtime" / "python311" / "python.exe",
             HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe",
         ]
@@ -5259,7 +6849,9 @@ if __name__ == "__main__":
             subprocess.Popen(
                 [_python, _script],
                 cwd=_cwd,
-                creationflags=0x00000008 if sys.platform == "win32" else 0
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=(0x00000008 | 0x08000000) if sys.platform == "win32" else 0
             )
             # Destroy this bubble-only process's bubble so the keep-alive loop exits
             bwnd = _bubble_state.get("hwnd")
