@@ -1,5 +1,5 @@
 param(
-    [string]$Source = "C:\Users\dtyao\AppData\Local\hermes",
+    [string]$Source = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path,
     [string]$Target = "D:\AI\project\hermes-install"
 )
 
@@ -35,6 +35,7 @@ function Invoke-RoboMirror {
         "/FFT",
         "/COPY:DAT",
         "/DCOPY:DAT",
+        "/XJ",
         "/NP",
         "/NFL",
         "/NDL",
@@ -145,6 +146,12 @@ Invoke-RoboMirror `
     -ExcludeDirs ($commonExcludeDirs + @("wechat_monitor_shots")) `
     -ExcludeFiles ($commonExcludeFiles + @("*_state.json", "*.tmp"))
 
+Invoke-RoboMirror `
+    -From (Join-Path $Source "employees") `
+    -To (Join-Path $Target "employees") `
+    -ExcludeDirs $commonExcludeDirs `
+    -ExcludeFiles $commonExcludeFiles
+
 Copy-IfExists (Join-Path $Source "config.yaml") (Join-Path $Target "config.yaml")
 Copy-IfExists (Join-Path $Source "SOUL.md") (Join-Path $Target "SOUL.md")
 Copy-IfExists (Join-Path $Source "RULES_FOR_AI.md") (Join-Path $Target "RULES_FOR_AI.md")
@@ -158,7 +165,6 @@ Copy-IfExists (Join-Path $Source "tools\launch_hermes.py") (Join-Path $Target "t
     "hermes-agent\venv",
     "hermes-agent\node_modules",
     "test_install\venv",
-    "employees",
     "venv",
     "cache",
     "audio_cache",
@@ -188,5 +194,5 @@ Copy-IfExists (Join-Path $Source "tools\launch_hermes.py") (Join-Path $Target "t
 
 Write-Host ""
 Write-Host "Kept install-only assets in target: install/update scripts, offline wheels, cua-driver, hermes_patches, tools."
-Write-Host "Skipped local runtime/sensitive data: venv, caches, sessions, employees, state.db, auth files, logs, .env."
+Write-Host "Skipped local runtime/sensitive data: venv, caches, sessions, state.db, auth files, logs, .env."
 Write-Host "Sync complete."

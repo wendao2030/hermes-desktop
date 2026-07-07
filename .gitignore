@@ -1,20 +1,20 @@
-# --- 虚拟环境 ---
+# Virtual environments
 venv/
 hermes-agent/venv/
 
-# --- Python 缓存 ---
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
 
-# --- 敏感配置 ---
+# Sensitive or machine-local config
 .env
 config.yaml
 config.yaml.bak*
 auth.json
 auth.lock
 
-# --- 运行时数据（状态/日志/缓存） ---
+# Runtime data
 state.db
 state.db-shm
 state.db-wal
@@ -32,47 +32,45 @@ sandboxes/
 cron/
 interrupt_debug.log
 
-# --- 大文件（二进制） ---
+# Large local packages
 cua-driver-darwin-universal.tar.gz
 offline/wheels/
 offline/python/
 
-# --- 桌面客户端运行时 ---
+# Desktop client runtime data
 desktop-client/sessions/
 desktop-client/*debug*.json
 desktop-client/*.log
 desktop-client/__pycache__/
-
-# --- 记忆文件（个人数据） ---
-memories/
-
-# --- LSP ---
-lsp/node_modules/
-lsp/bin/
-
-# --- 补丁生成的临时文件 ---
-$null
-
-# --- IDE ---
-.vscode/
-.idea/
-
-# --- macOS ---
-.DS_Store
-runtime/
-
-# --- Desktop runtime/generated evidence ---
 desktop-client/state.json
 desktop-client/state.db
 desktop-client/execution_evidence/
 desktop-client/static/_bubble*.bmp
 desktop-client/static/_test.bmp
-skills/**/temp_screenshots/
+
+# Personal memory and runtime skill state
+memories/
+.skills_prompt_snapshot.json
 skills/.curator_backups/
 skills/.hub/
 skills/.usage.json
+skills/.usage.json.lock
 skills/.curator_state
+skills/**/temp_screenshots/
+
+# LSP runtime
+lsp/node_modules/
+lsp/bin/
+
+# Generated local artifacts
+$null
 ai_ppt_preview/
 ai_ppt_preview_v2/
 ppt_assets/
 make_ai_ppt.py
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+runtime/

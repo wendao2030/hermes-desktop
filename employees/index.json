@@ -2,7 +2,7 @@
   "employees": [
     {
       "id": "emp-3e664a0c",
-      "name": "小美",
+      "name": "设计师小美",
       "emoji": "👩‍💼",
       "role": "设计师",
       "style": "",
@@ -79,7 +79,7 @@
           "updated_at": "2026-06-09T14:25:34.814037"
         }
       ],
-      "max_slots": 5,
+      "max_slots": 10,
       "workflow_presets_seeded_at": "2026-06-09T14:25:34.814037",
       "latest_task": {
         "id": "task-4d2ece2b",
@@ -95,34 +95,38 @@
         "completed_at": "2026-06-13T23:23:47.422233",
         "result_summary": "晚上好呀 🌙✨ 不过有个小小的提醒哦：我是 Hermes Agent（Hermes助手），不是小美 小美是你的员工，我是你的AI助手😊 今晚有什么我可以帮你的吗？比如： - 🎨 继续设计或生成图片 - 📚 批改学生作业 - 💬 发送微信/Q...",
         "user_confirm_note": ""
-      }
-    },
-    {
-      "id": "emp-397b00d5",
-      "name": "小丽",
-      "emoji": "👩‍🦰",
-      "role": "财务专家",
-      "personality": "精通财务",
+      },
       "work_content": "",
       "work_steps": "",
-      "goal": "",
+      "self_growth": "",
+      "work_dir": "D:\\hermes_workspace\\xiaomei"
+    },
+    {
+      "id": "emp-1ac512ce",
+      "name": "教学小蜜",
+      "emoji": "👩‍🔬",
+      "role": "助教",
+      "personality": "严谨细致",
+      "work_content": "1.批改作业\n2.出习题\n3.做教学材料（如教案等）\n4.其他教学工作",
+      "work_steps": "",
+      "goal": "帮助讲师完成批改作业等教务工作",
       "self_growth": "",
       "notes": "",
       "work_mode": "manual",
-      "created_at": "2026-06-07T17:34:25.405941",
-      "session_id": "20260607_173426_0a76c9fa",
+      "created_at": "2026-07-01T11:27:57.295441",
+      "workflow_presets_seeded_at": "2026-07-01T11:27:57.295441",
       "workflows": [
         {
           "id": "wf-default",
           "name": "日常工作",
-          "description": "财务专家",
+          "description": "1.批改作业\n2.出习题\n3.做教学材料",
           "steps": "",
           "questions": "开始前先问清楚目标、素材、风格/标准、输出形式和是否需要用户中途确认。",
           "enabled": true,
           "is_default": true,
           "default_inputs": {},
-          "created_at": "2026-06-09T13:01:16.919759",
-          "updated_at": "2026-06-09T13:01:16.919759"
+          "created_at": "2026-07-01T11:27:57.295441",
+          "updated_at": "2026-07-01T11:27:57.295441"
         },
         {
           "id": "wf-learning",
@@ -133,13 +137,192 @@
           "default_inputs": {},
           "enabled": true,
           "is_default": false,
-          "created_at": "2026-06-09T14:25:34.814037",
-          "updated_at": "2026-06-09T14:25:34.814037"
+          "created_at": "2026-07-01T11:27:57.295441",
+          "updated_at": "2026-07-01T11:27:57.295441"
         }
       ],
-      "max_slots": 5,
-      "workflow_presets_seeded_at": "2026-06-09T14:25:34.814037",
-      "latest_task": null
+      "max_slots": 10,
+      "latest_task": null,
+      "session_id": "20260701_112759_c69c5831"
+    },
+    {
+      "id": "emp-323e5872",
+      "name": "销冠小王",
+      "emoji": "🧑",
+      "role": "销售员",
+      "personality": "销售专家，市场专家",
+      "work_content": "通过微信等渠道与客户深度聊天，让客户下单",
+      "work_steps": "",
+      "goal": "可以深度的挖掘客户，快速拿下客户",
+      "self_growth": "",
+      "notes": "",
+      "work_mode": "manual",
+      "created_at": "2026-07-01T23:20:51.215193",
+      "workflow_presets_seeded_at": "2026-07-01T23:20:51.215193",
+      "workflows": [
+        {
+          "id": "wf-default",
+          "name": "日常工作",
+          "description": "通过微信等渠道与客户深度聊天，让客户下单",
+          "steps": "",
+          "questions": "开始前先问清楚目标、素材、风格/标准、输出形式和是否需要用户中途确认。",
+          "enabled": true,
+          "is_default": true,
+          "default_inputs": {},
+          "created_at": "2026-07-01T23:20:51.215193",
+          "updated_at": "2026-07-01T23:20:51.215193"
+        },
+        {
+          "id": "wf-learning",
+          "name": "学习和积累",
+          "description": "需要让员工围绕某个方向持续学习、总结并积累经验时使用。",
+          "questions": "开工前问清楚学习方向、资料来源、输出形式和多久复盘一次。",
+          "steps": "1. 确认学习目标\n2. 检查已有知识\n3. 阅读或搜索新资料\n4. 总结关键收获\n5. 更新知识库和经验",
+          "default_inputs": {},
+          "enabled": true,
+          "is_default": false,
+          "created_at": "2026-07-01T23:20:51.215193",
+          "updated_at": "2026-07-01T23:20:51.215193"
+        }
+      ],
+      "max_slots": 10,
+      "latest_task": null,
+      "session_id": "20260701_232052_f8818333"
+    },
+    {
+      "id": "emp-b33e3f32",
+      "name": "助教小韩",
+      "emoji": "😊",
+      "role": "助教",
+      "personality": "",
+      "work_content": "",
+      "work_steps": "",
+      "goal": "",
+      "self_growth": "",
+      "notes": "",
+      "work_mode": "manual",
+      "created_at": "2026-07-04T11:10:30.065462",
+      "workflow_presets_seeded_at": "2026-07-04T11:10:30.065462",
+      "workflows": [
+        {
+          "id": "wf-default",
+          "name": "日常工作",
+          "description": "适合这位员工的日常工作。",
+          "steps": "",
+          "questions": "开始前先问清楚目标、素材、风格/标准、输出形式和是否需要用户中途确认。",
+          "enabled": true,
+          "is_default": true,
+          "default_inputs": {},
+          "created_at": "2026-07-04T11:10:30.065462",
+          "updated_at": "2026-07-04T11:10:30.065462"
+        },
+        {
+          "id": "wf-learning",
+          "name": "学习和积累",
+          "description": "需要让员工围绕某个方向持续学习、总结并积累经验时使用。",
+          "questions": "开工前问清楚学习方向、资料来源、输出形式和多久复盘一次。",
+          "steps": "1. 确认学习目标\n2. 检查已有知识\n3. 阅读或搜索新资料\n4. 总结关键收获\n5. 更新知识库和经验",
+          "default_inputs": {},
+          "enabled": true,
+          "is_default": false,
+          "created_at": "2026-07-04T11:10:30.065462",
+          "updated_at": "2026-07-04T11:10:30.065462"
+        }
+      ],
+      "max_slots": 10,
+      "latest_task": null,
+      "session_id": "20260704_111032_f3be5d79",
+      "work_dir": "D:\\hermes_workspace\\zhujiaoxiaohan"
+    },
+    {
+      "id": "emp-446496fa",
+      "name": "电商张姐",
+      "emoji": "👨‍🎨",
+      "role": "电商达人",
+      "work_dir": "",
+      "personality": "",
+      "work_content": "",
+      "work_steps": "",
+      "goal": "",
+      "self_growth": "",
+      "notes": "",
+      "work_mode": "manual",
+      "created_at": "2026-07-05T16:08:44.255951",
+      "workflow_presets_seeded_at": "2026-07-05T16:08:44.255951",
+      "workflows": [
+        {
+          "id": "wf-default",
+          "name": "日常工作",
+          "description": "电商大人",
+          "steps": "",
+          "questions": "开始前先问清楚目标、素材、风格/标准、输出形式和是否需要用户中途确认。",
+          "enabled": true,
+          "is_default": true,
+          "default_inputs": {},
+          "created_at": "2026-07-05T16:08:44.255951",
+          "updated_at": "2026-07-05T16:08:44.255951"
+        },
+        {
+          "id": "wf-learning",
+          "name": "学习和积累",
+          "description": "需要让员工围绕某个方向持续学习、总结并积累经验时使用。",
+          "questions": "开工前问清楚学习方向、资料来源、输出形式和多久复盘一次。",
+          "steps": "1. 确认学习目标\n2. 检查已有知识\n3. 阅读或搜索新资料\n4. 总结关键收获\n5. 更新知识库和经验",
+          "default_inputs": {},
+          "enabled": true,
+          "is_default": false,
+          "created_at": "2026-07-05T16:08:44.255951",
+          "updated_at": "2026-07-05T16:08:44.255951"
+        }
+      ],
+      "max_slots": 10,
+      "latest_task": null,
+      "session_id": "20260705_160945_12952f4e"
+    },
+    {
+      "id": "emp-70b7204e",
+      "name": "自媒体花姐",
+      "emoji": "👩‍🚒",
+      "role": "自媒体自由职业者",
+      "work_dir": "",
+      "personality": "",
+      "work_content": "",
+      "work_steps": "",
+      "goal": "",
+      "self_growth": "",
+      "notes": "",
+      "work_mode": "manual",
+      "created_at": "2026-07-05T16:09:33.687793",
+      "workflow_presets_seeded_at": "2026-07-05T16:09:33.687793",
+      "workflows": [
+        {
+          "id": "wf-default",
+          "name": "日常工作",
+          "description": "自媒体自由职业者",
+          "steps": "",
+          "questions": "开始前先问清楚目标、素材、风格/标准、输出形式和是否需要用户中途确认。",
+          "enabled": true,
+          "is_default": true,
+          "default_inputs": {},
+          "created_at": "2026-07-05T16:09:33.687793",
+          "updated_at": "2026-07-05T16:09:33.687793"
+        },
+        {
+          "id": "wf-learning",
+          "name": "学习和积累",
+          "description": "需要让员工围绕某个方向持续学习、总结并积累经验时使用。",
+          "questions": "开工前问清楚学习方向、资料来源、输出形式和多久复盘一次。",
+          "steps": "1. 确认学习目标\n2. 检查已有知识\n3. 阅读或搜索新资料\n4. 总结关键收获\n5. 更新知识库和经验",
+          "default_inputs": {},
+          "enabled": true,
+          "is_default": false,
+          "created_at": "2026-07-05T16:09:33.687793",
+          "updated_at": "2026-07-05T16:09:33.687793"
+        }
+      ],
+      "max_slots": 10,
+      "latest_task": null,
+      "session_id": "20260705_160945_ccbc5a77"
     }
   ]
 }

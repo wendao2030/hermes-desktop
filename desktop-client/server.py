@@ -4831,17 +4831,21 @@ _httpx_verify = os.environ.get("HERMES_CONSOLE_VERIFY_SSL", "0") not in ("0", "f
 
 
 @app.get("/api/skills/console-square")
-async def get_console_square_skills():
-    """Fetch skill list from the Hermes Console server."""
+async def get_console_square_skills(page: int = 1, size: int = 20, search: str = ""):
+    """Fetch skill list from the Hermes Console server with pagination."""
     try:
         import httpx
-        resp = httpx.get(f"{CONSOLE_BASE_URL}/api/skills/square", timeout=10, verify=_httpx_verify)
+        params = {"page": page, "size": size}
+        if search:
+            params["search"] = search
+        resp = httpx.get(f"{CONSOLE_BASE_URL}/api/skills/square", params=params, timeout=15, verify=_httpx_verify)
         if resp.status_code == 200:
             skills = resp.json()
-            return {"skills": skills, "source": "console"}
+            total = resp.headers.get("X-Total-Count", len(skills))
+            return {"skills": skills, "source": "console", "total": int(total), "page": page, "size": size}
     except Exception as e:
         log_msg("WARN", f"Console skills fetch failed: {e}")
-    return {"skills": [], "source": "console", "error": "unavailable"}
+    return {"skills": [], "source": "console", "error": "unavailable", "total": 0}
 
 
 @app.post("/api/skills/console-install/{skill_id}")
@@ -4889,29 +4893,26 @@ async def install_console_skill(skill_id: int, request: Request):
 
 
 @app.get("/api/skills/featured")
-async def get_featured_skills():
-    """Get featured/popular skills from Hermes Console server."""
-    # First try console server
+async def get_featured_skills(page: int = 1, size: int = 20):
+    """Get featured/popular skills from Hermes Console server (paginated)."""
     try:
         import httpx
-        log_msg("INFO", f"Fetching skills from console: {CONSOLE_BASE_URL}")
-        resp = httpx.get(f"{CONSOLE_BASE_URL}/api/skills/square", timeout=8, verify=_httpx_verify)
-        log_msg("INFO", f"Console skills response: {resp.status_code}")
+        resp = httpx.get(f"{CONSOLE_BASE_URL}/api/skills/square",
+                        params={"page": page, "size": size}, timeout=15, verify=_httpx_verify)
         if resp.status_code == 200:
-            skills = resp.json()
-            log_msg("INFO", f"Console skills count: {len(skills) if isinstance(skills, list) else 'not list'}")
-            if isinstance(skills, list) and skills:
-                result = []
-                for s in skills:
-                    result.append({
-                        "name": s.get("name", ""),
-                        "description": s.get("description", ""),
-                        "source": "console",
-                        "identifier": str(s.get("id", "")),
-                        "tags": [s.get("category", ""), s.get("version", "")],
-                        "install_cmd": "",
-                    })
-                return {"skills": result, "count": len(result), "source": "console"}
+            skills = resp.json() if isinstance(resp.json(), list) else []
+            total = int(resp.headers.get("X-Total-Count", len(skills)))
+            result = []
+            for s in skills:
+                result.append({
+                    "name": s.get("name", ""),
+                    "description": s.get("description", ""),
+                    "source": "console",
+                    "identifier": str(s.get("id", "")),
+                    "tags": [s.get("category", ""), s.get("version", "")],
+                    "install_cmd": "",
+                })
+            return {"skills": result, "count": len(result), "total": total, "source": "console"}
     except Exception as e:
         log_msg("WARN", f"Console skills fetch failed: {e}")
     # Fallback: try uskill.cn

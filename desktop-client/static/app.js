@@ -274,6 +274,12 @@ const app = createApp({
         const marketQuery = ref('');
         const marketResults = ref([]);
         const marketLoading = ref(false);
+        // Pagination
+        const PAGE_SIZE = 20;
+        const installedPage = ref(1);
+        const marketPage = ref(1);
+        const marketTotal = ref(0);
+        const paginatedInstalled = ref([]);
         const skillDetailName = ref('');
         const skillDetailContent = ref('');
         const skillDetailLoading = ref(false);
@@ -1635,9 +1641,20 @@ const app = createApp({
                 const data = await resp.json();
                 installedSkills.value = data.skills || [];
                 filterInstalledSkills();
+                applyInstalledPagination();
             } catch (e) {
                 console.error('Load skills error:', e);
             }
+        }
+
+        function applyInstalledPagination() {
+            const start = (installedPage.value - 1) * PAGE_SIZE;
+            paginatedInstalled.value = filteredInstalledSkills.value.slice(start, start + PAGE_SIZE);
+        }
+
+        function applyMarketPagination() {
+            const start = (marketPage.value - 1) * PAGE_SIZE;
+            paginatedMarket.value = marketResults.value.slice(start, start + PAGE_SIZE);
         }
 
         function filterInstalledSkills() {
@@ -1651,6 +1668,8 @@ const app = createApp({
                     (s.category || '').toLowerCase().includes(q)
                 );
             }
+            installedPage.value = 1;
+            applyInstalledPagination();
         }
 
         function isSkillInstalled(name) {
@@ -2620,9 +2639,10 @@ const app = createApp({
         async function loadFeatured() {
             marketLoading.value = true;
             try {
-                const resp = await fetch('/api/skills/featured');
+                const resp = await fetch('/api/skills/featured?page=' + marketPage.value + '&size=20');
                 const data = await resp.json();
                 marketResults.value = data.skills || [];
+                marketTotal.value = data.total || data.count || marketResults.value.length;
             } catch (e) {
                 console.error('Featured skills error:', e);
                 marketResults.value = [];
@@ -2630,32 +2650,27 @@ const app = createApp({
             marketLoading.value = false;
         }
 
+        async function marketGoPage(p) {
+            marketPage.value = p;
+            marketQuery.value ? searchMarket() : loadFeatured();
+        }
+
         async function searchMarket() {
             const q = marketQuery.value.trim();
-            if (!q) { loadFeatured(); return; }
+            if (!q) { marketPage.value = 1; loadFeatured(); return; }
             marketLoading.value = true;
             try {
-                const resp = await fetch('/api/skills/console-square');
+                const resp = await fetch('/api/skills/console-square?page=' + marketPage.value + '&size=20&search=' + encodeURIComponent(q));
                 const data = await resp.json();
-                const all = data.skills || [];
-                if (q) {
-                    const lower = q.toLowerCase();
-                    marketResults.value = all.filter(function(s) {
-                        return (s.name || '').toLowerCase().indexOf(lower) >= 0
-                            || (s.title || '').toLowerCase().indexOf(lower) >= 0
-                            || (s.description || '').toLowerCase().indexOf(lower) >= 0
-                            || (s.category || '').toLowerCase().indexOf(lower) >= 0;
-                    });
-                } else {
-                    marketResults.value = all.map(function(s) {
-                        return {
-                            name: s.name, description: s.description || '',
-                            source: 'console', identifier: String(s.id),
-                            tags: [s.category || '', s.version || ''],
-                            download_id: s.id,
-                        };
-                    });
-                }
+                marketResults.value = (data.skills || []).map(function(s) {
+                    return {
+                        name: s.name, description: s.description || '',
+                        source: 'console', identifier: String(s.id),
+                        tags: [s.category || '', s.version || ''],
+                        download_id: s.id,
+                    };
+                });
+                marketTotal.value = data.total || data.count || marketResults.value.length;
             } catch (e) {
                 console.error('Market search error:', e);
             }
@@ -3175,6 +3190,12 @@ const app = createApp({
             marketQuery,
             marketResults,
             marketLoading,
+            installedPage,
+            marketPage,
+            marketTotal,
+            paginatedInstalled,
+            applyInstalledPagination,
+            marketGoPage,
             skillDetailName,
             skillDetailContent,
             skillDetailLoading,
