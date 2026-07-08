@@ -2,8 +2,8 @@
 
 This guide is for moving Hermes development to another Windows computer.
 It is different from customer installation: source code comes from Git, while
-the private Python runtime, venv dependencies, and offline Node.js are prepared
-by the installer/bootstrap package.
+the private Python runtime, runtime-installed dependencies, and offline Node.js
+are prepared by the installer/bootstrap package.
 
 ## Recommended clone location
 
@@ -28,7 +28,6 @@ The source repository does not track these runtime folders:
 
 ```text
 runtime\python311
-hermes-agent\venv
 offline\node
 offline\wheels
 state.db
@@ -39,8 +38,10 @@ memories
 ```
 
 Prepare them with `hermes-install` or a local bootstrap script after cloning.
-This keeps the source repository small and avoids carrying personal runtime
-state to another machine.
+Dependencies are installed directly into `runtime\python311` for the desktop
+client package; do not create a new `hermes-agent\venv` unless you are doing
+isolated upstream Hermes Agent development. This keeps the source repository
+small and avoids carrying personal runtime state to another machine.
 
 ## Path rules
 

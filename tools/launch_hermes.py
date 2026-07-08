@@ -24,6 +24,8 @@ HERMES_HOME = _home()
 LOG_DIR = HERMES_HOME / "logs"
 LOG_FILE = LOG_DIR / "launcher.log"
 LOCK_FILE = LOG_DIR / "launcher.lock"
+SERVER_STDOUT_LOG = LOG_DIR / "server-launch.stdout.log"
+SERVER_STDERR_LOG = LOG_DIR / "server-launch.stderr.log"
 URL = "http://127.0.0.1:8765"
 
 
@@ -39,13 +41,12 @@ def log(message: str) -> None:
 def _pythonw() -> Path:
     candidates = [
         HERMES_HOME / "runtime" / "python311" / "pythonw.exe",
-        HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "pythonw.exe",
-        HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe",
+        HERMES_HOME / "runtime" / "python311" / "python.exe",
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    return Path(sys.executable)
+    return candidates[0]
 
 
 def _server_ready(timeout: float = 0.7) -> bool:
@@ -63,6 +64,21 @@ def _wait_ready(seconds: float = 12.0) -> bool:
             return True
         time.sleep(0.35)
     return False
+
+
+def _log_recent_file(path: Path, *, lines: int = 40) -> None:
+    try:
+        if not path.exists():
+            log(f"{path.name} does not exist")
+            return
+        text = path.read_text(encoding="utf-8", errors="replace")
+        tail = text.splitlines()[-lines:]
+        if tail:
+            log(f"Recent {path.name}:")
+            for line in tail:
+                log(f"  {line}")
+    except Exception as exc:
+        log(f"Failed to read {path.name}: {exc}")
 
 
 def _acquire_launcher_lock():
@@ -130,8 +146,9 @@ def main() -> int:
     os.environ["HERMES_HOME"] = str(HERMES_HOME)
     os.environ["HERMES_DISABLE_OPTIONAL_DEP_INSTALL"] = "1"
     os.environ["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
-    os.environ["HERMES_AGENT_VENV"] = str(HERMES_HOME / "hermes-agent" / "venv")
-    os.environ["HERMES_VENV_PYTHON"] = str(HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe")
+    runtime_python = HERMES_HOME / "runtime" / "python311" / "python.exe"
+    os.environ["HERMES_RUNTIME_PYTHON"] = str(runtime_python)
+    os.environ["HERMES_PYTHON"] = str(runtime_python)
     os.environ["HERMES_DESKTOP_SERVE_ONLY"] = "1"
     # Auto-detect Chromium browser (Edge > Chrome > Chromium) for Playwright
     _browser = shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
@@ -159,19 +176,28 @@ def main() -> int:
         pythonw = _pythonw()
         log(f"Starting server: {pythonw} {server} --serve-only")
         try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            stdout_file = SERVER_STDOUT_LOG.open("a", encoding="utf-8", errors="replace")
+            stderr_file = SERVER_STDERR_LOG.open("a", encoding="utf-8", errors="replace")
+            stdout_file.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] server start\n")
+            stderr_file.write(f"\n[{datetime.now().isoformat(timespec='seconds')}] server start\n")
+            stdout_file.flush()
+            stderr_file.flush()
             subprocess.Popen(
                 [str(pythonw), str(server), "--serve-only"],
                 cwd=str(cwd),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=stdout_file,
+                stderr=stderr_file,
                 creationflags=0x00000008 if sys.platform == "win32" else 0,
             )
         except Exception as exc:
             log(f"Failed to start server: {exc}")
             return 1
 
-    if not _wait_ready():
+    if not _wait_ready(seconds=45.0):
         log("Server did not become ready in time")
+        _log_recent_file(SERVER_STDOUT_LOG)
+        _log_recent_file(SERVER_STDERR_LOG)
         return 2
 
     if not _open_app_window():

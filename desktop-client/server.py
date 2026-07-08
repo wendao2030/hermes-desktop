@@ -32,13 +32,15 @@ from typing import Any, Optional
 HERMES_HOME = Path(__file__).resolve().parent.parent
 SKILLS_DIR = HERMES_HOME / "skills"
 HERMES_AGENT = HERMES_HOME / "hermes-agent"
-HERMES_VENV_SITE = HERMES_HOME / "hermes-agent" / "venv" / "Lib" / "site-packages"
+HERMES_RUNTIME = HERMES_HOME / "runtime" / "python311"
+HERMES_RUNTIME_SITE = HERMES_RUNTIME / "Lib" / "site-packages"
+HERMES_RUNTIME_SCRIPTS = HERMES_RUNTIME / "Scripts"
 os.environ["HERMES_HOME"] = str(HERMES_HOME)
 os.environ.setdefault("HERMES_DESKTOP_SERVE_ONLY", "1")
 os.environ.setdefault("HERMES_DISABLE_OPTIONAL_DEP_INSTALL", "1")
 os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
-os.environ.setdefault("HERMES_AGENT_VENV", str(HERMES_AGENT / "venv"))
-os.environ.setdefault("HERMES_VENV_PYTHON", str(HERMES_AGENT / "venv" / "Scripts" / "python.exe"))
+os.environ.setdefault("HERMES_RUNTIME_PYTHON", str(HERMES_RUNTIME / "python.exe"))
+os.environ.setdefault("HERMES_PYTHON", str(HERMES_RUNTIME / "python.exe"))
 # Auto-detect Chromium browser (Edge > Chrome > Chromium) for Playwright
 _browser = shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
 if not _browser:
@@ -47,15 +49,17 @@ if not _browser:
         if os.path.isfile(_c): _browser = _c; break
 if _browser:
     os.environ.setdefault("PUPPETEER_EXECUTABLE_PATH", _browser)
-if HERMES_VENV_SITE.exists():
+for _site_dir in (HERMES_RUNTIME_SITE,):
+    if not _site_dir.exists():
+        continue
     # addsitepackages processes .pth files. pywin32 depends on pywin32.pth to
     # expose win32/pywin32_system32, so a plain sys.path.insert is not enough.
-    site.addsitedir(str(HERMES_VENV_SITE))
+    site.addsitedir(str(_site_dir))
     try:
-        sys.path.remove(str(HERMES_VENV_SITE))
+        sys.path.remove(str(_site_dir))
     except ValueError:
         pass
-    sys.path.insert(0, str(HERMES_VENV_SITE))
+    sys.path.insert(0, str(_site_dir))
 sys.path.insert(0, str(HERMES_AGENT))
 
 def _prepend_process_path(*paths: Path) -> None:
@@ -78,8 +82,8 @@ def _prepend_process_path(*paths: Path) -> None:
 
 _prepend_process_path(
     HERMES_HOME / "tools" / "bin",
-    HERMES_HOME / "venv" / "Scripts",
-    HERMES_AGENT / "venv" / "Scripts",
+    HERMES_RUNTIME_SCRIPTS,
+    HERMES_RUNTIME,
     Path.home() / ".local" / "bin",
 )
 
