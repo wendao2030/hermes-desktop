@@ -22,7 +22,45 @@ C:\Users\yao\AppData\Local\hermes
 C:\Users\yao\AppData\Local\hermes-console
 ```
 
-## Runtime layout
+## Portable folder layout
+
+Hermes can run as a portable folder.  The launcher treats the folder containing
+`tools\launch_hermes.py` as `HERMES_HOME`, so the whole directory can be copied
+to another drive or another Windows computer.
+
+For a complete portable copy, keep these folders together:
+
+```text
+Hermes\
+start.bat
+setup.bat
+runtime\python311
+desktop-client
+hermes-agent
+skills
+tools
+config.yaml
+```
+
+After copying the full folder, run:
+
+```bat
+setup.bat
+```
+
+This creates the desktop shortcut pointing back to this exact folder.  You can
+also run `start.bat` directly from inside the folder.
+
+If no global work directory is configured in the desktop settings, Hermes uses:
+
+```text
+Hermes\workspace
+```
+
+The user can still change the global work directory in Settings, and each
+employee can still use its own work directory.
+
+## Git checkout layout
 
 The source repository does not track these runtime folders:
 

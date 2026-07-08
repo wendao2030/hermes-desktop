@@ -1327,12 +1327,12 @@ def _get_global_work_dir() -> str:
     state = _load_desktop_state()
     raw = str(state.get("global_work_dir") or "").strip()
     if not raw:
-        return ""
+        return _normalize_work_dir(str(HERMES_HOME / "workspace"), create=True)
     try:
         return _normalize_work_dir(raw)
     except Exception as e:
         log_msg("WARN", f"Configured global work dir is unavailable: {e}")
-        return ""
+        return _normalize_work_dir(str(HERMES_HOME / "workspace"), create=True)
 
 def _set_global_work_dir(value: str, *, create: bool = False) -> str:
     work_dir = _normalize_work_dir(value, create=create) if str(value or "").strip() else ""
@@ -5941,9 +5941,7 @@ if __name__ == "__main__":
     def _preferred_desktop_python() -> str:
         candidates = [
             HERMES_HOME / "runtime" / "python311" / "pythonw.exe",
-            HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "pythonw.exe",
             HERMES_HOME / "runtime" / "python311" / "python.exe",
-            HERMES_HOME / "hermes-agent" / "venv" / "Scripts" / "python.exe",
         ]
         for candidate in candidates:
             if candidate.exists():

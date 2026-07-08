@@ -14,9 +14,9 @@ from pathlib import Path
 
 
 def _home() -> Path:
-    env_home = os.environ.get("HERMES_HOME")
-    if env_home:
-        return Path(env_home)
+    # Portable mode: the launcher location is the source of truth.  This avoids
+    # a stale machine-level HERMES_HOME pointing a copied folder back to the old
+    # computer or old install path.
     return Path(__file__).resolve().parents[1]
 
 
