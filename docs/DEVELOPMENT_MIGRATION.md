@@ -43,6 +43,16 @@ client package; do not create a new `hermes-agent\venv` unless you are doing
 isolated upstream Hermes Agent development. This keeps the source repository
 small and avoids carrying personal runtime state to another machine.
 
+After cloning on a development machine, restore the private runtime from the
+installer package:
+
+```powershell
+cd $env:LOCALAPPDATA\hermes
+powershell -ExecutionPolicy Bypass -File .\tools\bootstrap_runtime.ps1 -InstallPackage D:\AI\project\hermes-install
+```
+
+Use `-Force` only when you intentionally want to rebuild `runtime\python311`.
+
 ## Path rules
 
 Avoid committing paths such as:
