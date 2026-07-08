@@ -41,6 +41,8 @@ os.environ.setdefault("HERMES_DISABLE_OPTIONAL_DEP_INSTALL", "1")
 os.environ.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")
 os.environ.setdefault("HERMES_RUNTIME_PYTHON", str(HERMES_RUNTIME / "python.exe"))
 os.environ.setdefault("HERMES_PYTHON", str(HERMES_RUNTIME / "python.exe"))
+os.environ.setdefault("HERMES_BUNDLED_SKILLS", str(HERMES_AGENT / "skills"))
+os.environ.setdefault("HERMES_OPTIONAL_SKILLS", str(HERMES_AGENT / "optional-skills"))
 # Auto-detect Chromium browser (Edge > Chrome > Chromium) for Playwright
 _browser = shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
 if not _browser:

@@ -232,26 +232,19 @@ def _find_bash() -> str:
         return custom
 
     # Prefer our own portable Git install first — this way a broken or
-    # partially-uninstalled system Git can't hijack the bash lookup.  The
-    # install.ps1 installer always drops portable Git here when the user
-    # didn't already have a working system Git.
-    #
-    # Layouts (both checked so upgrades between MinGit and PortableGit
-    # installs work transparently):
-    #   PortableGit: %LOCALAPPDATA%\hermes\git\bin\bash.exe   (primary)
-    #   MinGit:      %LOCALAPPDATA%\hermes\git\usr\bin\bash.exe (legacy/32-bit fallback)
     _local_appdata = os.environ.get("LOCALAPPDATA", "")
-    _hermes_portable_git = os.path.join(_local_appdata, "hermes", "git") if _local_appdata else ""
-    if _hermes_portable_git:
+    git_exe = shutil.which("git")
+    if git_exe:
+        git_root = os.path.dirname(os.path.dirname(git_exe))
         for candidate in (
-            os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
-            os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
+            os.path.join(git_root, "bin", "bash.exe"),
+            os.path.join(git_root, "usr", "bin", "bash.exe"),
         ):
             if os.path.isfile(candidate):
                 return candidate
 
     found = shutil.which("bash")
-    if found:
+    if found and "\\Git\\" in found:
         return found
 
     for candidate in (

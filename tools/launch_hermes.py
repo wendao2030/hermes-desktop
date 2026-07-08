@@ -150,6 +150,8 @@ def main() -> int:
     os.environ["HERMES_RUNTIME_PYTHON"] = str(runtime_python)
     os.environ["HERMES_PYTHON"] = str(runtime_python)
     os.environ["HERMES_DESKTOP_SERVE_ONLY"] = "1"
+    os.environ.setdefault("HERMES_BUNDLED_SKILLS", str(HERMES_HOME / "hermes-agent" / "skills"))
+    os.environ.setdefault("HERMES_OPTIONAL_SKILLS", str(HERMES_HOME / "hermes-agent" / "optional-skills"))
     # Auto-detect Chromium browser (Edge > Chrome > Chromium) for Playwright
     _browser = shutil.which("msedge") or shutil.which("chrome") or shutil.which("chromium")
     if not _browser:
