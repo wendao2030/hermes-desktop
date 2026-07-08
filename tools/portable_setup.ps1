@@ -108,7 +108,34 @@ if (-not $gitBash) {
 Write-Host "[OK] Git Bash found:"
 Write-Host "  $gitBash"
 Require-Command -Name "node.exe" -DisplayName "Node.js" -InstallUrl "https://nodejs.org/" | Out-Null
+Require-Command -Name "npm.cmd" -DisplayName "npm" -InstallUrl "https://nodejs.org/" | Out-Null
 Write-Host ""
+
+$agentPackage = Join-Path $hermesAgent "package.json"
+$agentPackageLock = Join-Path $hermesAgent "package-lock.json"
+$agentBrowserPackage = Join-Path $hermesAgent "node_modules\agent-browser\package.json"
+if ((Test-Path -LiteralPath $agentPackage) -and -not (Test-Path -LiteralPath $agentBrowserPackage)) {
+    Write-Host "[INFO] Installing Hermes Agent Node dependencies..."
+    Push-Location $hermesAgent
+    try {
+        if (Test-Path -LiteralPath $agentPackageLock) {
+            & npm.cmd ci --omit=dev --registry=https://registry.npmmirror.com
+        } else {
+            & npm.cmd install --omit=dev --registry=https://registry.npmmirror.com
+        }
+        if ($LASTEXITCODE -ne 0) {
+            throw "npm dependency installation failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        Pop-Location
+    }
+    if (-not (Test-Path -LiteralPath $agentBrowserPackage)) {
+        throw "Hermes Agent Node dependency installation finished, but agent-browser was not found."
+    }
+    Write-Host "[OK] Hermes Agent Node dependencies installed"
+} elseif (Test-Path -LiteralPath $agentBrowserPackage) {
+    Write-Host "[OK] Hermes Agent Node dependencies found"
+}
 
 foreach ($dir in $portableDirs) {
     New-Item -ItemType Directory -Force -Path $dir | Out-Null

@@ -29,7 +29,7 @@ sessions/
 pairing/
 hooks/
 sandboxes/
-cron/
+/cron/
 interrupt_debug.log
 
 # Large local packages
